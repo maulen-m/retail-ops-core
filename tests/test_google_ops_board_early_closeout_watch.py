@@ -32,6 +32,23 @@ class _FakeClient:
                 matrix.append([""] * len(headers))
             matrix[sheet_row - 1] = [str(update["row"].get(header, "")) for header in headers]
 
+    def update_cells(self, updates: list[dict[str, object]]) -> None:
+        if updates:
+            self.update_calls.append({"cells": updates})
+        for update in updates:
+            tab_name, cell = str(update["range"]).split("!", 1)
+            column_letters = "".join(character for character in cell if character.isalpha())
+            sheet_row = int("".join(character for character in cell if character.isdigit()))
+            column_index = 0
+            for character in column_letters:
+                column_index = column_index * 26 + (ord(character.upper()) - 64)
+            matrix = self._tab_values[tab_name]
+            while len(matrix) < sheet_row:
+                matrix.append([])
+            while len(matrix[sheet_row - 1]) < column_index:
+                matrix[sheet_row - 1].append("")
+            matrix[sheet_row - 1][column_index - 1] = str(update.get("value", ""))
+
 
 def _write_creds(tmp_path: Path) -> Path:
     creds = tmp_path / "svc.json"
@@ -1141,6 +1158,8 @@ def test_early_closeout_watch_writes_auto_fill_audit_after_1857(monkeypatch, tmp
     audit_root = tmp_path / "audit"
 
     monkeypatch.setattr(watch_mod, "AUTO_PROBABLE_AUDIT_ROOT", audit_root, raising=False)
+    write_time = datetime(2026, 4, 15, 18, 57, 9, tzinfo=ZoneInfo("Asia/Almaty"))
+    monkeypatch.setattr(watch_mod, "now_almaty", lambda: write_time)
     monkeypatch.setattr(
         watch_mod,
         "load_db_rows_for_writeback",
@@ -1173,7 +1192,150 @@ def test_early_closeout_watch_writes_auto_fill_audit_after_1857(monkeypatch, tmp
     assert client.get_tab_values("SalesRaw_Today")[1][8] == "2XL"
     assert client.get_tab_values("Run_Control")[1][1] == "READY"
     assert client.get_tab_values("Run_Control")[1][2] == watch_mod.AUTO_READY_SET_BY
+    assert client.get_tab_values("Run_Control")[1][3] == write_time.isoformat()
     assert "AUTO_1857 probable backfill: 1 row(s)" in client.get_tab_values("Run_Control")[1][4]
+
+
+def test_auto_probable_fill_aborts_before_salesraw_write_when_employee_sets_size_and_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = load_ops_board_contract()
+    run_headers = contract.tabs["Run_Control"].headers
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+
+    class _EmployeeRaceClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                {
+                    "Run_Control": [
+                        run_headers,
+                        ["2026-04-15", "HOLD", "", "", "", "", "", ""],
+                    ],
+                    "SalesRaw_Today": [
+                        sales_headers,
+                        [
+                            "TODAY", "2026-04-15", "Universal", "", "", "1",
+                            "Line51", "1001", "", "2XL", "Offer", "CL_TEST", "1",
+                            "line", "DECLARED_ORDER", "HIGH",
+                        ],
+                    ],
+                }
+            )
+            self.run_control_reads = 0
+
+        def get_tab_values(self, tab_name: str):
+            if tab_name == "Run_Control":
+                self.run_control_reads += 1
+                if self.run_control_reads == 2:
+                    self._tab_values["SalesRaw_Today"][1][sales_headers.index("MY_SIZE")] = "L"
+                    row = self._tab_values["Run_Control"][1]
+                    row[run_headers.index("ready_for_closeout")] = "READY"
+                    row[run_headers.index("ready_set_by")] = "EMPLOYEE"
+                    row[run_headers.index("ready_set_at")] = "2026-04-15T18:57:06+05:00"
+            return super().get_tab_values(tab_name)
+
+    client = _EmployeeRaceClient()
+    monkeypatch.setattr(watch_mod, "AUTO_PROBABLE_AUDIT_ROOT", tmp_path / "audit")
+    monkeypatch.setattr(
+        watch_mod,
+        "load_db_rows_for_writeback",
+        lambda *_args, **_kwargs: {
+            "1": {"sku_key": "CL_TEST", "product_type": "CL"}
+        },
+    )
+
+    report = watch_mod._maybe_auto_prepare_closeout(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        now=datetime(2026, 4, 15, 18, 57, 5, tzinfo=ZoneInfo("Asia/Almaty")),
+    )
+
+    assert report["employee_ready_freeze"] is True
+    assert report["salesraw_updates_applied"] == 0
+    assert client.get_tab_values("SalesRaw_Today")[1][sales_headers.index("MY_SIZE")] == "L"
+    run_control = client.get_tab_values("Run_Control")[1]
+    assert run_control[run_headers.index("ready_set_by")] == "EMPLOYEE"
+    assert run_control[run_headers.index("ready_set_at")] == "2026-04-15T18:57:06+05:00"
+    assert client.update_calls == []
+
+
+def test_auto_probable_fill_aborts_before_identity_write_when_employee_sets_size_and_ready(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = load_ops_board_contract()
+    run_headers = contract.tabs["Run_Control"].headers
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+
+    class _EmployeeRaceClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                {
+                    "Run_Control": [
+                        run_headers,
+                        ["2026-04-15", "HOLD", "", "", "", "", "", ""],
+                    ],
+                    "SalesRaw_Today": [
+                        sales_headers,
+                        [
+                            "TODAY", "2026-04-15", "Universal", "", "", "1",
+                            "Line51", "1001", "", "2XL", "Offer", "CL_TEST", "1",
+                            "line", "DECLARED_ORDER", "HIGH",
+                        ],
+                    ],
+                }
+            )
+            self.run_control_reads = 0
+
+        def get_tab_values(self, tab_name: str):
+            if tab_name == "Run_Control":
+                self.run_control_reads += 1
+                if self.run_control_reads == 3:
+                    self._tab_values["SalesRaw_Today"][1][sales_headers.index("MY_SIZE")] = "L"
+                    row = self._tab_values["Run_Control"][1]
+                    row[run_headers.index("ready_for_closeout")] = "READY"
+                    row[run_headers.index("ready_set_by")] = "EMPLOYEE"
+                    row[run_headers.index("ready_set_at")] = "2026-04-15T18:57:07+05:00"
+            return super().get_tab_values(tab_name)
+
+    client = _EmployeeRaceClient()
+    monkeypatch.setattr(watch_mod, "AUTO_PROBABLE_AUDIT_ROOT", tmp_path / "audit")
+    monkeypatch.setattr(
+        watch_mod,
+        "now_almaty",
+        lambda: datetime(2026, 4, 15, 18, 57, 8, tzinfo=ZoneInfo("Asia/Almaty")),
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "load_db_rows_for_writeback",
+        lambda *_args, **_kwargs: {
+            "1": {"sku_key": "CL_TEST", "product_type": "CL"}
+        },
+    )
+
+    report = watch_mod._maybe_auto_prepare_closeout(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        now=datetime(2026, 4, 15, 18, 57, 5, tzinfo=ZoneInfo("Asia/Almaty")),
+    )
+
+    assert report["employee_ready_freeze"] is True
+    assert report["salesraw_updates_applied"] == 1
+    assert client.get_tab_values("SalesRaw_Today")[1][sales_headers.index("MY_SIZE")] == "L"
+    run_control = client.get_tab_values("Run_Control")[1]
+    assert run_control[run_headers.index("ready_set_by")] == "EMPLOYEE"
+    assert run_control[run_headers.index("ready_set_at")] == "2026-04-15T18:57:07+05:00"
+    assert all(
+        not any(str(cell.get("range", "")).startswith("Run_Control!") for cell in call.get("cells", []))
+        for call in client.update_calls
+    )
 
 
 def test_early_closeout_watch_requires_visible_probable_size_after_1857(monkeypatch, tmp_path: Path) -> None:
@@ -1320,9 +1482,11 @@ def test_early_closeout_watch_blank_probable_size_after_1857_blocks_closeout(mon
     )
     creds = _write_creds(tmp_path)
     calls: list[list[str]] = []
+    alerts: list[dict[str, object]] = []
 
     monkeypatch.setenv("AB_GOOGLE_SERVICE_ACCOUNT_JSON", str(creds))
     monkeypatch.setenv("AB_GOOGLE_OPS_BOARD_SPREADSHEET_ID", "sheet-id")
+    monkeypatch.setenv(watch_mod.AUTO_PROBABLE_FILL_ENV, "1")
     monkeypatch.setattr(watch_mod, "_in_watch_window", lambda: True)
     monkeypatch.setattr(watch_mod, "today_almaty", lambda: date(2026, 4, 15))
     monkeypatch.setattr(
@@ -1331,7 +1495,13 @@ def test_early_closeout_watch_blank_probable_size_after_1857_blocks_closeout(mon
         lambda: datetime(2026, 4, 15, 18, 57, 5, tzinfo=ZoneInfo("Asia/Almaty")),
     )
     monkeypatch.setattr(watch_mod, "READY_DEBOUNCE_STATE_PATH", tmp_path / "ready_watch_state.json")
+    monkeypatch.setattr(watch_mod, "AUTO_PROBABLE_AUDIT_ROOT", tmp_path / "audit")
     monkeypatch.setattr(watch_mod.GoogleOpsBoardClient, "from_service_account_file", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(
+        watch_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
     monkeypatch.setattr(
         watch_mod,
         "load_db_rows_for_writeback",
@@ -1353,10 +1523,18 @@ def test_early_closeout_watch_blank_probable_size_after_1857_blocks_closeout(mon
 
     rc = watch_mod.main()
 
-    assert rc == 0
+    assert rc != 0
     assert calls == []
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "CRITICAL"
+    assert alerts[0]["dedup_key"] == "2026-04-15"
+    assert alerts[0]["dedup_window"].total_seconds() == 1800
+    assert "1001=MISSING_PROBABLE_SIZE" in "\n".join(alerts[0]["lines"])
     assert client.get_tab_values("SalesRaw_Today")[1][8] == ""
-    assert client.get_tab_values("Run_Control")[1][1] == "HOLD"
+    run_control = client.get_tab_values("Run_Control")[1]
+    assert run_control[1] == "HOLD"
+    assert run_control[7] == "BLOCKED_MISSING_OR_INVALID_PROBABLE_SIZE"
+    assert "1001=MISSING_PROBABLE_SIZE" in run_control[4]
 
 
 def test_early_closeout_watch_skips_when_board_is_not_ready(monkeypatch, tmp_path: Path) -> None:

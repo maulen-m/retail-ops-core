@@ -22,6 +22,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
+from core.alerts.ops_alert_outbox import enqueue_alert  # noqa: E402
 from core.ops.fitpack_coordination import load_storeb_packing_excluded  # noqa: E402
 from core.ops.waybill_shipping_obligations import normalize_store_code  # noqa: E402
 from core.stores.roster import load_sync_enabled_kaspi_store_codes  # noqa: E402
@@ -81,6 +82,22 @@ def _append_note(existing_note: object, extra_note: str) -> str:
     return f"{current} | {extra_note}"
 
 
+def _a1_column_letter(column_number: int) -> str:
+    if column_number < 1:
+        raise ValueError("column_number must be positive")
+    value = column_number
+    letters = ""
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _cell_update(tab_name: str, headers: list[str], sheet_row: int, field: str, value: object) -> dict[str, object]:
+    column = _a1_column_letter(headers.index(field) + 1)
+    return {"range": f"{tab_name}!{column}{sheet_row}", "value": value}
+
+
 def _auto_fill_row_is_in_scope(
     row: dict[str, object],
     *,
@@ -110,7 +127,25 @@ def _blocker_order_ids(rows: list[dict[str, object]]) -> list[str]:
     return order_ids
 
 
+def _auto_probable_unresolved_summary(rows: list[dict[str, object]]) -> str:
+    details = [
+        f"{_clean(row.get('OrderID') or row.get('order_id')) or 'unknown'}={_clean(row.get('reason')) or 'UNKNOWN'}"
+        for row in rows
+    ]
+    return "Blocking probable-size rows: " + ", ".join(details)
+
+
 def _recoverable_block_status(readiness: dict[str, object]) -> tuple[str, str]:
+    auto_unresolved_rows = list(readiness.get("auto_probable_unresolved_rows") or [])
+    if auto_unresolved_rows:
+        details = [
+            f"{_clean(row.get('OrderID') or row.get('order_id')) or 'unknown'}={_clean(row.get('reason')) or 'UNKNOWN'}"
+            for row in auto_unresolved_rows
+        ]
+        return (
+            "BLOCKED_MISSING_OR_INVALID_PROBABLE_SIZE",
+            "BLOCKED_MISSING_OR_INVALID_PROBABLE_SIZE: " + ", ".join(details),
+        )
     if not bool(readiness.get("run_control_ready_ok")):
         return "", ""
     blank_rows = list(readiness.get("blank_size_rows") or [])
@@ -202,13 +237,13 @@ def _mark_recoverable_ready_block(
     updated_notes = _append_note(row.get("notes"), note)
     if _clean(row.get("last_orchestrator_status")) == status and _clean(row.get("notes")) == updated_notes:
         return
-    row["last_verified_ready_at"] = now.isoformat()
-    row["last_orchestrator_status"] = status
-    row["notes"] = updated_notes
-    client.update_tab_rows(
-        "Run_Control",
-        headers,
-        [{"sheet_row": int(selected["sheet_row"]), "row": row}],
+    sheet_row = int(selected["sheet_row"])
+    client.update_cells(
+        [
+            _cell_update("Run_Control", headers, sheet_row, "last_verified_ready_at", now.isoformat()),
+            _cell_update("Run_Control", headers, sheet_row, "last_orchestrator_status", status),
+            _cell_update("Run_Control", headers, sheet_row, "notes", updated_notes),
+        ]
     )
 
 
@@ -376,9 +411,8 @@ def _maybe_auto_prepare_closeout(
     }
     db_rows = load_db_rows_for_writeback(db_path, visible_db_row_ids)
 
-    salesraw_updates: list[dict[str, object]] = []
+    salesraw_candidates: list[dict[str, object]] = []
     unresolved_rows: list[dict[str, object]] = []
-    applied_rows: list[dict[str, str]] = []
     for row_info in scoped_salesraw_rows:
         row = dict(row_info["row"])
         if _clean(row.get("MY_SIZE")):
@@ -397,10 +431,9 @@ def _maybe_auto_prepare_closeout(
                 }
             )
             continue
-        row["MY_SIZE"] = resolved_size
-        salesraw_updates.append({"sheet_row": int(row_info["sheet_row"]), "row": row})
-        applied_rows.append(
+        salesraw_candidates.append(
             {
+                "sheet_row": int(row_info["sheet_row"]),
                 "_db_row_id": _clean(row.get("_db_row_id")),
                 "OrderID": _clean(row.get("OrderID")),
                 "MY_SIZE": resolved_size,
@@ -408,13 +441,30 @@ def _maybe_auto_prepare_closeout(
             }
         )
 
-    if salesraw_updates:
-        allowed, _, gate = _revalidate_watch_mutation(
+    applied_rows: list[dict[str, str]] = []
+    if salesraw_candidates:
+        allowed, current_run_control, gate = _revalidate_watch_mutation(
             client=client,
             contract=contract,
             target_date=target_date,
             now=now,
         )
+        if _clean((current_run_control.get("row") or {}).get("ready_for_closeout")).upper() == "READY":
+            print(
+                "Google Ops Board early-closeout watch: READY appeared before the SalesRaw "
+                "auto-fill write; aborting auto-prepare and preserving the employee request."
+            )
+            return {
+                "cutoff_reached": True,
+                "salesraw_updates_applied": 0,
+                "applied_rows": [],
+                "audit_path": "",
+                "run_control_updated": False,
+                "blank_rows_remaining": unresolved_rows,
+                "out_of_scope_rows_skipped": out_of_scope_row_count,
+                "employee_ready_freeze": True,
+                "blocked_reason": "employee_ready_freeze_before_salesraw_write",
+            }
         if not allowed:
             return {
                 "cutoff_reached": True,
@@ -426,26 +476,86 @@ def _maybe_auto_prepare_closeout(
                 "out_of_scope_rows_skipped": out_of_scope_row_count,
                 "blocked_reason": f"local_halt_barrier:{_clean(gate.get('reason'))}",
             }
-        client.update_tab_rows("SalesRaw_Today", salesraw_headers, salesraw_updates)
+
+        fresh_salesraw_rows = {
+            int(row_info["sheet_row"]): dict(row_info["row"])
+            for row_info in extract_rows_with_positions_from_matrix(
+                salesraw_headers,
+                client.get_tab_values("SalesRaw_Today"),
+            )
+        }
+        salesraw_cell_updates: list[dict[str, object]] = []
+        for candidate in salesraw_candidates:
+            sheet_row = int(candidate["sheet_row"])
+            fresh_row = fresh_salesraw_rows.get(sheet_row) or {}
+            expected_order_id = _clean(candidate.get("OrderID"))
+            observed_order_id = _clean(fresh_row.get("OrderID"))
+            if observed_order_id != expected_order_id:
+                unresolved_rows.append(
+                    {
+                        "_db_row_id": _clean(candidate.get("_db_row_id")),
+                        "OrderID": expected_order_id,
+                        "observed_order_id": observed_order_id,
+                        "reason": "ROW_IDENTITY_CHANGED_BEFORE_AUTO_FILL",
+                    }
+                )
+                continue
+            if _clean(fresh_row.get("MY_SIZE")):
+                continue
+            salesraw_cell_updates.append(
+                _cell_update(
+                    "SalesRaw_Today",
+                    salesraw_headers,
+                    sheet_row,
+                    "MY_SIZE",
+                    candidate["MY_SIZE"],
+                )
+            )
+            applied_rows.append(
+                {
+                    "_db_row_id": _clean(candidate.get("_db_row_id")),
+                    "OrderID": expected_order_id,
+                    "MY_SIZE": _clean(candidate.get("MY_SIZE")),
+                    "source": _clean(candidate.get("source")),
+                }
+            )
+        client.update_cells(salesraw_cell_updates)
 
     run_control_updated = False
     if not unresolved_rows:
+        prewrite_now = now_almaty()
         allowed, current_run_control, gate = _revalidate_watch_mutation(
             client=client,
             contract=contract,
             target_date=target_date,
-            now=now,
+            now=prewrite_now,
         )
+        if _clean((current_run_control.get("row") or {}).get("ready_for_closeout")).upper() == "READY":
+            print(
+                "Google Ops Board early-closeout watch: READY appeared before the Run_Control "
+                "auto-trigger write; aborting auto-prepare and preserving the employee request."
+            )
+            return {
+                "cutoff_reached": True,
+                "salesraw_updates_applied": len(applied_rows),
+                "applied_rows": applied_rows,
+                "audit_path": "",
+                "run_control_updated": False,
+                "blank_rows_remaining": unresolved_rows,
+                "out_of_scope_rows_skipped": out_of_scope_row_count,
+                "employee_ready_freeze": True,
+                "blocked_reason": "employee_ready_freeze_before_run_control_write",
+            }
         if not allowed:
             audit_path = _write_auto_probable_audit(
                 target_date=target_date,
                 now=now,
-                applied_rows=applied_rows if salesraw_updates else [],
+                applied_rows=applied_rows,
                 unresolved_rows=unresolved_rows,
             )
             return {
                 "cutoff_reached": True,
-                "salesraw_updates_applied": len(salesraw_updates),
+                "salesraw_updates_applied": len(applied_rows),
                 "applied_rows": applied_rows,
                 "audit_path": str(audit_path) if audit_path else "",
                 "run_control_updated": False,
@@ -462,14 +572,21 @@ def _maybe_auto_prepare_closeout(
         if ready_value != "READY":
             note_bits.append("AUTO_1857 closeout trigger")
         if note_bits:
-            run_control_row["ready_for_closeout"] = "READY"
-            run_control_row["ready_set_by"] = AUTO_READY_SET_BY
-            run_control_row["ready_set_at"] = now.isoformat()
-            run_control_row["notes"] = _append_note(run_control_row.get("notes"), "; ".join(note_bits))
-            client.update_tab_rows(
-                "Run_Control",
-                run_control_headers,
-                [{"sheet_row": int(run_control_selected["sheet_row"]), "row": run_control_row}],
+            stamp_now = now_almaty()
+            sheet_row = int(run_control_selected["sheet_row"])
+            client.update_cells(
+                [
+                    _cell_update("Run_Control", run_control_headers, sheet_row, "ready_for_closeout", "READY"),
+                    _cell_update("Run_Control", run_control_headers, sheet_row, "ready_set_by", AUTO_READY_SET_BY),
+                    _cell_update("Run_Control", run_control_headers, sheet_row, "ready_set_at", stamp_now.isoformat()),
+                    _cell_update(
+                        "Run_Control",
+                        run_control_headers,
+                        sheet_row,
+                        "notes",
+                        _append_note(run_control_row.get("notes"), "; ".join(note_bits)),
+                    ),
+                ]
             )
             run_control_updated = True
 
@@ -481,12 +598,13 @@ def _maybe_auto_prepare_closeout(
     )
     return {
         "cutoff_reached": True,
-        "salesraw_updates_applied": len(salesraw_updates),
+        "salesraw_updates_applied": len(applied_rows),
         "applied_rows": applied_rows,
         "audit_path": str(audit_path) if audit_path else "",
         "run_control_updated": run_control_updated,
         "blank_rows_remaining": unresolved_rows,
         "out_of_scope_rows_skipped": out_of_scope_row_count,
+        "employee_ready_freeze": False,
     }
 
 
@@ -658,6 +776,36 @@ def main() -> int:
 
     if not readiness["ready"]:
         clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
+        unresolved_auto_rows = list(auto_prepare.get("blank_rows_remaining") or [])
+        if cutoff_reached and unresolved_auto_rows:
+            readiness = {
+                **readiness,
+                "auto_probable_unresolved_rows": unresolved_auto_rows,
+            }
+            _mark_recoverable_ready_block(
+                client=client,
+                contract=contract,
+                target_date=target_date,
+                readiness=readiness,
+                now=local_now,
+            )
+            summary = _auto_probable_unresolved_summary(unresolved_auto_rows)
+            enqueue_alert(
+                title="Google Ops Board auto-closeout blocked by probable-size gaps",
+                lines=[
+                    f"Target date: {target_date.isoformat()}",
+                    summary,
+                    "Closeout remains blocked until every listed MY_SIZE is resolved.",
+                ],
+                severity="CRITICAL",
+                dedup_key=target_date.isoformat(),
+                dedup_window=timedelta(minutes=30),
+            )
+            print(
+                "Google Ops Board early-closeout watch: unresolved probable-size stopline; "
+                + summary
+            )
+            return 1
         _mark_recoverable_ready_block(
             client=client,
             contract=contract,
@@ -686,7 +834,7 @@ def main() -> int:
 
     auto_fallback_just_prepared = bool(
         auto_prepare["salesraw_updates_applied"] or auto_prepare["run_control_updated"]
-    )
+    ) and not bool(auto_prepare.get("employee_ready_freeze"))
     if cutoff_reached and auto_fallback_just_prepared:
         clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
         print(

@@ -86,6 +86,7 @@ def _recent_dedup_match(
     *,
     now: datetime,
     path: Path | None = None,
+    dedup_window: timedelta = DEDUP_WINDOW,
 ) -> dict[str, Any] | None:
     if not dedup_key:
         return None
@@ -93,7 +94,7 @@ def _recent_dedup_match(
         if str(entry.get("dedup_key") or "") != dedup_key:
             continue
         created_at = _parse_timestamp(entry.get("created_at"))
-        if created_at is not None and now - created_at < DEDUP_WINDOW:
+        if created_at is not None and now - created_at < dedup_window:
             return entry
     return None
 
@@ -223,6 +224,7 @@ def enqueue_alert(
     dedup_key: str = "",
     held: bool = False,
     chat_id: str = ERROR_ALERT_CHAT_ID,
+    dedup_window: timedelta = DEDUP_WINDOW,
 ) -> bool:
     """Persist an alert before attempting delivery; return Telegram delivery status."""
     normalized_severity = str(severity or "WARN").strip().upper()
@@ -230,7 +232,11 @@ def enqueue_alert(
         raise ValueError("severity must be WARN or CRITICAL")
     now = _now()
     normalized_key = str(dedup_key or "").strip()
-    duplicate = _recent_dedup_match(normalized_key, now=now)
+    duplicate = _recent_dedup_match(
+        normalized_key,
+        now=now,
+        dedup_window=dedup_window,
+    )
     if duplicate is not None:
         return str(duplicate.get("status") or "") == "delivered"
 

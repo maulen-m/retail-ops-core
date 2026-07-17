@@ -174,3 +174,34 @@ def test_dedup_key_suppresses_repeats_for_one_hour(monkeypatch, tmp_path: Path) 
     assert outbox_mod.enqueue_alert(title="Dedup", lines=["detail"], dedup_key="same") is True
     assert len(post_calls) == 2
     assert len({event["alert_id"] for event in _events(outbox_path)}) == 2
+
+
+def test_alert_can_rearm_after_custom_thirty_minute_dedup_window(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    outbox_path = _isolate(monkeypatch, tmp_path)
+    post_calls: list[object] = []
+    clock = {"now": datetime(2026, 7, 18, 5, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr(outbox_mod, "_now", lambda: clock["now"])
+    monkeypatch.setattr(
+        "core.alerts.telegram.requests.post",
+        lambda *_args, **_kwargs: post_calls.append(object())
+        or _Response({"ok": True, "result": {"message_id": len(post_calls)}}),
+    )
+
+    kwargs = {
+        "title": "Probable-size stopline",
+        "lines": ["1001=MISSING_PROBABLE_SIZE"],
+        "dedup_key": "2026-07-18",
+        "dedup_window": timedelta(minutes=30),
+    }
+    assert outbox_mod.enqueue_alert(**kwargs) is True
+    clock["now"] += timedelta(minutes=29)
+    assert outbox_mod.enqueue_alert(**kwargs) is True
+    assert len(post_calls) == 1
+
+    clock["now"] += timedelta(minutes=2)
+    assert outbox_mod.enqueue_alert(**kwargs) is True
+    assert len(post_calls) == 2
+    assert len({event["alert_id"] for event in _events(outbox_path)}) == 2
