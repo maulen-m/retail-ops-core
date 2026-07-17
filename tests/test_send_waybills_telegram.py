@@ -18,6 +18,7 @@ def _write_manifest(
     target_date: str = "2026-04-21",
     ready_set_at: str | None = None,
     batch_label: str = "21.04.26_MERGED_qnt2",
+    store_counts_by_pdf_key: dict[str, dict[str, int]] | None = None,
 ) -> Path:
     batch_root = today_root / "MERGED" / "SEND" / batch_label
     pdf_dir = batch_root / "NORMAL_singles"
@@ -29,6 +30,7 @@ def _write_manifest(
 
     payload_entries = []
     for entry in entries:
+        order_ids = list(entry.get("order_ids") or [entry["order_id"]])
         payload_entries.append(
             {
                 "pdf_key": entry["pdf_key"],
@@ -39,9 +41,16 @@ def _write_manifest(
                 "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
                 "file_size": len(pdf_bytes),
                 "mtime": "2026-04-21T00:00:00+05:00",
-                "order_ids": [entry["order_id"]],
-                "order_counts_by_store": {"Universal": 1},
-                "source_row_ids": [f"{entry['order_id']}@2026-04-21#1"],
+                "order_ids": order_ids,
+                "order_counts_by_store": dict(
+                    (store_counts_by_pdf_key or {}).get(
+                        entry["pdf_key"],
+                        {"Universal": 1},
+                    )
+                ),
+                "source_row_ids": [
+                    f"{order_id}@2026-04-21#1" for order_id in order_ids
+                ],
                 "items_detail": [entry["filename"]],
                 "send_sequence": entry["send_sequence"],
             }
@@ -60,10 +69,21 @@ def _write_manifest(
         "line_scope_hash": "d" * 64,
         "source_root": str(batch_root),
         "batch_hash": "",
-        "counts": {"pdfs": len(entries), "orders": len(entries), "overdue_orders": 0},
+        "counts": {
+            "pdfs": len(entries),
+            "orders": sum(
+                len(entry.get("order_ids") or [entry["order_id"]])
+                for entry in entries
+            ),
+            "overdue_orders": 0,
+        },
         "overdue_order_ids": [],
         "missing_overdue_order_ids": [],
-        "send_order_ids": sorted(entry["order_id"] for entry in entries),
+        "send_order_ids": sorted(
+            order_id
+            for entry in entries
+            for order_id in (entry.get("order_ids") or [entry["order_id"]])
+        ),
         "terminal_orders_excluded": True,
         "entries": payload_entries,
     }
@@ -137,6 +157,129 @@ def test_waybill_telegram_config_loads_project_dotenv_fallback(monkeypatch, tmp_
     config = get_waybill_telegram_config()
 
     assert config == {"token": "waybill-file-token", "chat_id": "-12345"}
+
+
+def test_store_filter_sends_only_store_pure_entries_and_leaves_others_pending(
+    tmp_path: Path,
+) -> None:
+    entries = [
+        {"pdf_key": "pdf-a", "filename": "a.pdf", "order_id": "A", "send_sequence": 1},
+        {"pdf_key": "pdf-b", "filename": "b.pdf", "order_id": "B", "send_sequence": 2},
+        {"pdf_key": "pdf-c", "filename": "c.pdf", "order_id": "C", "send_sequence": 3},
+    ]
+    batch_root = _write_manifest(
+        tmp_path,
+        entries,
+        store_counts_by_pdf_key={
+            "pdf-a": {"Universal": 1},
+            "pdf-b": {"AcmeWear": 1},
+            "pdf-c": {"30000001_PP1": 1},
+        },
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token",
+        chat_id="-1001",
+        dry_run=True,
+        status_messages=False,
+        stores=["UNIVERSAL"],
+    )
+
+    assert report["ok"] is True
+    assert report["store_filter_codes"] == ["UNIVERSAL"]
+    assert report["manifest_total"] == 3
+    assert report["total"] == 2
+    assert report["sent"] == 2
+    ledger = json.loads(
+        (batch_root / "telegram_send_ledger.json").read_text(encoding="utf-8")
+    )
+    assert set(ledger["entries"]) == {"pdf-a", "pdf-b", "pdf-c"}
+    assert {entry["state"] for entry in ledger["entries"].values()} == {"pending"}
+
+
+def test_store_filter_fails_closed_on_mixed_entry_before_any_send(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    batch_root = _write_manifest(
+        tmp_path,
+        [
+            {
+                "pdf_key": "pdf-mixed",
+                "filename": "mixed.pdf",
+                "order_id": "MIXED",
+                "order_ids": ["MIXED-UNIVERSAL", "MIXED-ACMEWEAR"],
+                "send_sequence": 1,
+            }
+        ],
+        store_counts_by_pdf_key={
+            "pdf-mixed": {"Universal": 1, "AcmeWear": 1},
+        },
+    )
+    sends: list[dict] = []
+    monkeypatch.setattr(
+        telegram_mod,
+        "send_document",
+        lambda **kwargs: sends.append(kwargs) or {"success": True},
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token",
+        chat_id="-1001",
+        dry_run=True,
+        status_messages=False,
+        stores=["UNIVERSAL"],
+    )
+
+    assert report["ok"] is False
+    assert report["halt_reason"] == "TELEGRAM_STORE_SCOPE_MIXED"
+    assert report["mixed_entries"] == [
+        {
+            "pdf_key": "pdf-mixed",
+            "filename": "mixed.pdf",
+            "store_codes": ["ACMEWEAR", "UNIVERSAL"],
+        }
+    ]
+    assert sends == []
+    ledger = json.loads(
+        (batch_root / "telegram_send_ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["entries"]["pdf-mixed"]["state"] == "pending"
+
+
+def test_sender_without_store_filter_keeps_full_manifest_behavior(tmp_path: Path) -> None:
+    _write_manifest(
+        tmp_path,
+        [
+            {"pdf_key": "pdf-a", "filename": "a.pdf", "order_id": "A", "send_sequence": 1},
+            {"pdf_key": "pdf-b", "filename": "b.pdf", "order_id": "B", "send_sequence": 2},
+        ],
+        store_counts_by_pdf_key={
+            "pdf-a": {"Universal": 1},
+            "pdf-b": {"AcmeWear": 1},
+        },
+    )
+
+    report = telegram_mod.run_sender(
+        today_folder=tmp_path,
+        bundle_source=SOURCE_MERGED,
+        expected_target_date=date(2026, 4, 21),
+        token="token",
+        chat_id="-1001",
+        dry_run=True,
+        status_messages=False,
+    )
+
+    assert report["ok"] is True
+    assert report["total"] == 2
+    assert report["sent"] == 2
+    assert "store_filter_codes" not in report
 
 
 def test_waybill_telegram_config_prefers_dedicated_dotenv_over_generic_env(monkeypatch, tmp_path: Path):

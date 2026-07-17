@@ -22,6 +22,10 @@ from core.integrations.telegram_bot import (  # noqa: E402
     send_document,
     send_message,
 )
+from core.ops.waybill_shipping_obligations import (  # noqa: E402
+    KNOWN_STORE_CODES,
+    normalize_store_code,
+)
 from scripts.waybill_telegram_state import arm_passive_handover_watch  # noqa: E402
 from scripts.google_ops_board_automation_common import (  # noqa: E402
     DEFAULT_CLOSEOUT_HALT_BARRIER_PATH,
@@ -257,6 +261,74 @@ def _select_entries_for_telegram_send(
             continue
         blocked.append(entry)
     return selected, blocked
+
+
+def _entry_store_codes(entry: dict[str, Any]) -> set[str]:
+    stores: set[str] = set()
+    counts = entry.get("order_counts_by_store")
+    if isinstance(counts, dict) and counts:
+        stores.update(
+            normalize_store_code(raw_store)
+            for raw_store in counts
+            if normalize_store_code(raw_store)
+        )
+    if stores:
+        return stores
+    for raw_line in entry.get("source_lines") or []:
+        if not isinstance(raw_line, dict):
+            continue
+        raw_store = (
+            raw_line.get("store_code")
+            or raw_line.get("store")
+            or raw_line.get("store_name")
+        )
+        store = normalize_store_code(raw_store)
+        if store:
+            stores.add(store)
+    return stores
+
+
+def _filter_manifest_entries_by_store(
+    manifest_entries: list[dict[str, Any]],
+    selected_store_codes: set[str],
+) -> dict[str, Any]:
+    included: list[dict[str, Any]] = []
+    unselected: list[dict[str, Any]] = []
+    mixed: list[dict[str, Any]] = []
+    unclassified: list[dict[str, Any]] = []
+    for entry in manifest_entries:
+        entry_stores = _entry_store_codes(entry)
+        descriptor = {
+            "pdf_key": str(entry.get("pdf_key") or ""),
+            "filename": str(entry.get("filename") or ""),
+            "store_codes": sorted(entry_stores),
+        }
+        if not entry_stores:
+            unclassified.append(descriptor)
+        elif entry_stores <= selected_store_codes:
+            included.append(entry)
+        elif entry_stores & selected_store_codes:
+            mixed.append(descriptor)
+        else:
+            unselected.append(entry)
+    return {
+        "included": included,
+        "unselected": unselected,
+        "mixed": mixed,
+        "unclassified": unclassified,
+    }
+
+
+def _normalized_store_filter(stores: list[str] | tuple[str, ...] | set[str] | None) -> set[str] | None:
+    if stores is None:
+        return None
+    normalized = {normalize_store_code(store) for store in stores if str(store).strip()}
+    if not normalized:
+        raise ValueError("--store requires at least one store code")
+    unknown = sorted(normalized - KNOWN_STORE_CODES)
+    if unknown:
+        raise ValueError(f"unknown store code(s): {', '.join(unknown)}")
+    return normalized
 
 
 def _write_stopline(today_folder: Path, payload: dict[str, Any]) -> Path:
@@ -591,6 +663,7 @@ def run_sender(
     verbose: bool = False,
     manifest_path: Path | None = None,
     expected_manifest_sha256: str = "",
+    stores: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> dict[str, Any]:
     today_folder = Path(today_folder)
     report = _base_report(
@@ -598,6 +671,20 @@ def run_sender(
         bundle_source=bundle_source,
         expected_target_date=expected_target_date,
     )
+    try:
+        selected_store_codes = _normalized_store_filter(stores)
+    except ValueError as exc:
+        report.update(
+            {
+                "failed": 1,
+                "halted": True,
+                "halt_reason": "TELEGRAM_STORE_FILTER_INVALID",
+                "error": str(exc),
+                "fallback_allowed": False,
+                "completed_at": _now_iso(),
+            }
+        )
+        return report
 
     required_manifest_sha256 = str(expected_manifest_sha256 or "").strip().lower()
     if not dry_run and (
@@ -783,6 +870,7 @@ def run_sender(
             timeout_seconds=timeout_seconds,
             verbose=verbose,
             expected_manifest_sha256=observed_manifest_sha256,
+            selected_store_codes=selected_store_codes,
         )
     finally:
         _release_telegram_send_lock(lock_handle)
@@ -807,6 +895,7 @@ def _run_sender_with_lock(
     timeout_seconds: int,
     verbose: bool,
     expected_manifest_sha256: str,
+    selected_store_codes: set[str] | None,
 ) -> dict[str, Any]:
     ledger_path = batch_root / TELEGRAM_SEND_LEDGER_FILE
     try:
@@ -830,7 +919,48 @@ def _run_sender_with_lock(
         _write_stopline(today_folder, report)
         return report
 
-    entries = list(manifest.get("entries") or [])
+    manifest_entries = list(manifest.get("entries") or [])
+    entries = manifest_entries
+    scoped_manifest = manifest
+    if selected_store_codes is not None:
+        scope = _filter_manifest_entries_by_store(
+            manifest_entries,
+            selected_store_codes,
+        )
+        report.update(
+            {
+                "store_filter_codes": sorted(selected_store_codes),
+                "manifest_total": len(manifest_entries),
+                "store_selected_total": len(scope["included"]),
+                "store_unselected_total": len(scope["unselected"]),
+                "store_mixed_total": len(scope["mixed"]),
+                "store_unclassified_total": len(scope["unclassified"]),
+            }
+        )
+        if scope["mixed"] or scope["unclassified"]:
+            report.update(
+                {
+                    "failed": len(scope["mixed"]) + len(scope["unclassified"]),
+                    "halted": True,
+                    "halt_reason": (
+                        "TELEGRAM_STORE_SCOPE_MIXED"
+                        if scope["mixed"]
+                        else "TELEGRAM_STORE_SCOPE_UNCLASSIFIED"
+                    ),
+                    "error": (
+                        "store-filtered send blocked before Telegram: manifest "
+                        "contains mixed-store or unclassified entries"
+                    ),
+                    "mixed_entries": scope["mixed"],
+                    "unclassified_entries": scope["unclassified"],
+                    "fallback_allowed": False,
+                    "completed_at": _now_iso(),
+                }
+            )
+            _write_stopline(today_folder, report)
+            return report
+        entries = list(scope["included"])
+        scoped_manifest = {**manifest, "entries": entries}
     ordered_entries = order_pdfs_for_sending(entries)
     selected_entries, blocked_entries = _select_entries_for_telegram_send(
         ordered_entries,
@@ -841,7 +971,7 @@ def _run_sender_with_lock(
         selected_entries = selected_entries[: max(0, int(max_pdfs))]
 
     confirmed_before, confirmed_orders_by_store = _confirmed_progress_snapshot(entries, ledger)
-    store_stats = _store_stats_from_manifest(manifest)
+    store_stats = _store_stats_from_manifest(scoped_manifest)
     report.update(
         {
             "total": len(entries),
@@ -921,7 +1051,11 @@ def _run_sender_with_lock(
     for index, entry in enumerate(selected_entries, start=1):
         pdf_key = str(entry["pdf_key"])
         pdf_path = Path(entry["path"])
-        manifest_index = int(entry.get("send_sequence") or index)
+        manifest_index = (
+            index
+            if selected_store_codes is not None
+            else int(entry.get("send_sequence") or index)
+        )
         if dry_run:
             report["sent"] = int(report["sent"]) + 1
             continue
@@ -1040,7 +1174,7 @@ def _run_sender_with_lock(
 
     if status_messages:
         final_status = _send_final_status_table_from_manifest(
-            manifest=manifest,
+            manifest=scoped_manifest,
             ledger=ledger,
             token=config["token"],
             chat_id=config["chat_id"],
@@ -1197,6 +1331,13 @@ def _parse_iso_date(value: str) -> date:
         raise argparse.ArgumentTypeError(f"Invalid ISO date {value!r}; expected YYYY-MM-DD") from exc
 
 
+def _parse_store_code(value: str) -> str:
+    store = normalize_store_code(value)
+    if store not in KNOWN_STORE_CODES:
+        raise argparse.ArgumentTypeError(f"Unknown store code {value!r}")
+    return store
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Send waybill PDFs to Telegram via Bot API")
     parser.add_argument("--today-folder", type=Path, default=TODAY_FOLDER)
@@ -1204,6 +1345,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-target-date", type=_parse_iso_date, default=None)
     parser.add_argument("--manifest-path", type=Path, default=None)
     parser.add_argument("--manifest-sha256", type=str, default="")
+    parser.add_argument(
+        "--store",
+        action="append",
+        type=_parse_store_code,
+        default=None,
+        help="Send only entries entirely within this store set (repeatable)",
+    )
     parser.add_argument("--telegram-token", type=str, default=None)
     parser.add_argument("--telegram-chat-id", type=str, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -1229,6 +1377,31 @@ def main(argv: list[str] | None = None) -> int:
             expected_target_date=expected_target_date,
             manifest_path=args.manifest_path,
         )
+        if preflight.get("ok") and args.store:
+            manifest = load_send_batch_manifest(
+                args.today_folder,
+                source_mode=args.bundle_source,
+                manifest_path=args.manifest_path,
+            )
+            scope = _filter_manifest_entries_by_store(
+                list(manifest.get("entries") or []),
+                set(args.store),
+            )
+            preflight["store_filter_codes"] = sorted(set(args.store))
+            preflight["store_selected_total"] = len(scope["included"])
+            preflight["store_unselected_total"] = len(scope["unselected"])
+            preflight["mixed_entries"] = scope["mixed"]
+            preflight["unclassified_entries"] = scope["unclassified"]
+            if scope["mixed"] or scope["unclassified"]:
+                preflight.setdefault("issues", []).append(
+                    {
+                        "code": "store_scope_not_pure",
+                        "detail": (
+                            "manifest contains mixed-store or unclassified entries"
+                        ),
+                    }
+                )
+                preflight["ok"] = False
         try:
             config = get_waybill_telegram_config(
                 token=args.telegram_token,
@@ -1282,6 +1455,7 @@ def main(argv: list[str] | None = None) -> int:
         verbose=bool(args.verbose),
         manifest_path=args.manifest_path,
         expected_manifest_sha256=args.manifest_sha256,
+        stores=args.store,
     )
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
