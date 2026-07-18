@@ -134,6 +134,32 @@
       "report_root": "exports/google_ops_board/shadow_days",
       "divergence_alert": "local_only_outbox_warn_not_deliverable",
       "activation_state": "candidate_not_installed"
+    },
+    "git_governance": {
+      "backup_push": {
+        "manager": "scripts/run_backup_push_nightly.py",
+        "candidate_plist": "config/com.example.ab-backup-push.plist",
+        "label": "com.example.ab-backup-push",
+        "schedule": {
+          "hour": 23,
+          "minute": 40
+        },
+        "failure_alert": "local_only_outbox_warn_not_deliverable",
+        "activation_state": "candidate_not_installed"
+      },
+      "hygiene_report": {
+        "manager": "scripts/report_git_hygiene.py",
+        "candidate_plist": "config/com.example.ab-git-hygiene-report.plist",
+        "label": "com.example.ab-git-hygiene-report",
+        "schedule": {
+          "weekday": "Sunday",
+          "hour": 21,
+          "minute": 30
+        },
+        "report_root": "exports/git_hygiene",
+        "threshold_alert": "local_only_outbox_warn_not_deliverable",
+        "activation_state": "candidate_not_installed"
+      }
     }
   },
   "security": {
