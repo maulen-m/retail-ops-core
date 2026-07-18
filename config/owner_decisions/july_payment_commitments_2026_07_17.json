@@ -1,0 +1,96 @@
+{
+  "schema_version": "cashflow_commitment_owner_override.v1",
+  "decision_id": "JULY_PAYMENT_COMMITMENTS_2026_07_17",
+  "captured_at_local": "2026-07-17T21:55:00+05:00",
+  "run_id": "fable5_system_mission_m3b",
+  "scope": "remaining_july_2026_payment_obligations",
+  "source_file": "runs/tmux_orchestration/20260717_fable5_system_mission/OWNER_INPUT_PAYMENTS_JULY_20260717.md",
+  "owner_pay_date_convention": {
+    "date_authority": "owner_stated_pay_date",
+    "cashflow_treatment": "planned_outflow_date",
+    "loan_withdrawal_constraint": "bank_withdrawal_date must be at least one calendar day after owner_stated_pay_date"
+  },
+  "window_start": "2026-07-18",
+  "window_end": "2026-07-31",
+  "expected_obligation_count": 4,
+  "expected_total_kzt": 783000,
+  "obligations": [
+    {
+      "obligation_id": "freedom_acmewear",
+      "display_name": "Freedom",
+      "category": "loan_payment",
+      "commit_date": "2026-07-18",
+      "amount_kzt": 317000,
+      "commit_type": "OPEX",
+      "scenario_tag": "base",
+      "ref_id": "OPEX_OWNER_20260717_M3B_FREEDOM",
+      "minimum_bank_withdrawal_date": "2026-07-19",
+      "supersedes": [
+        {
+          "commit_date": "2026-07-17",
+          "amount_kzt": 319000,
+          "ref_id": "OPEX_OWNER_20260702_03"
+        }
+      ]
+    },
+    {
+      "obligation_id": "kaspi_store-d_pay_gold",
+      "display_name": "Kaspi 11KZ (pay+gold)",
+      "category": "loan_payment",
+      "commit_date": "2026-07-18",
+      "amount_kzt": 184000,
+      "commit_type": "OPEX",
+      "scenario_tag": "base",
+      "ref_id": "OPEX_OWNER_20260717_M3B_11KZ_PAY_GOLD",
+      "minimum_bank_withdrawal_date": "2026-07-19",
+      "supersedes": [
+        {
+          "commit_date": "2026-07-17",
+          "amount_kzt": 80000,
+          "ref_id": "OPEX_OWNER_20260702_04"
+        },
+        {
+          "commit_date": "2026-07-17",
+          "amount_kzt": 80000,
+          "ref_id": "OPEX_OWNER_20260702_24"
+        }
+      ]
+    },
+    {
+      "obligation_id": "universal_gold",
+      "display_name": "UNIVERSAL gold",
+      "category": "loan_payment",
+      "commit_date": "2026-07-22",
+      "amount_kzt": 259000,
+      "commit_type": "OPEX",
+      "scenario_tag": "base",
+      "ref_id": "OPEX_OWNER_20260717_M3B_UNIVERSAL_GOLD",
+      "minimum_bank_withdrawal_date": "2026-07-23",
+      "supersedes": [
+        {
+          "commit_date": "2026-07-21",
+          "amount_kzt": 166000,
+          "ref_id": "OPEX_OWNER_20260702_26"
+        }
+      ]
+    },
+    {
+      "obligation_id": "internet",
+      "display_name": "Internet",
+      "category": "work_subscription",
+      "commit_date": "2026-07-28",
+      "amount_kzt": 23000,
+      "commit_type": "OPEX",
+      "scenario_tag": "base",
+      "ref_id": "OPEX_OWNER_20260717_M3B_INTERNET",
+      "minimum_bank_withdrawal_date": null,
+      "supersedes": [
+        {
+          "commit_date": "2026-07-27",
+          "amount_kzt": 25000,
+          "ref_id": "OPEX_OWNER_20260702_11"
+        }
+      ]
+    }
+  ]
+}

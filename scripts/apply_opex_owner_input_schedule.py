@@ -51,6 +51,12 @@ DEFAULT_OWNER_DECISION = (
     / "owner_decisions"
     / "opex_loans_floor_refresh_2026_07_02.json"
 )
+DEFAULT_PAYMENT_OVERRIDE = (
+    PROJECT_ROOT
+    / "config"
+    / "owner_decisions"
+    / "july_payment_commitments_2026_07_17.json"
+)
 DEFAULT_AS_OF = date(2026, 7, 2)
 DEFAULT_VARIANT = "V2_owner80k"
 REPLACE_BOUNDARY = date(2026, 7, 2)
@@ -96,6 +102,168 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def _load_payment_override_manifest(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "cashflow_commitment_owner_override.v1":
+        raise OpexOwnerApplyError(f"unsupported payment override schema: {payload.get('schema_version')}")
+    for key in ("decision_id", "run_id", "source_file", "window_start", "window_end"):
+        if not str(payload.get(key) or "").strip():
+            raise OpexOwnerApplyError(f"payment override missing {key}")
+
+    source_path = PROJECT_ROOT / str(payload["source_file"])
+    if not source_path.exists():
+        raise OpexOwnerApplyError(f"payment override source file not found: {source_path}")
+
+    obligations = payload.get("obligations")
+    if not isinstance(obligations, list) or not obligations:
+        raise OpexOwnerApplyError("payment override obligations must be a non-empty list")
+    expected_count = int(payload.get("expected_obligation_count") or 0)
+    if len(obligations) != expected_count:
+        raise OpexOwnerApplyError(
+            f"payment override count mismatch: expected {expected_count}, observed {len(obligations)}"
+        )
+    expected_total = float(payload.get("expected_total_kzt") or 0.0)
+    observed_total = sum(float(item.get("amount_kzt") or 0.0) for item in obligations)
+    if observed_total != expected_total:
+        raise OpexOwnerApplyError(
+            f"payment override total mismatch: expected {expected_total}, observed {observed_total}"
+        )
+    return payload
+
+
+def _apply_payment_override_manifest(
+    rows: list[dict[str, Any]],
+    manifest_path: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    manifest = _load_payment_override_manifest(manifest_path)
+    window_start = date.fromisoformat(str(manifest["window_start"]))
+    window_end = date.fromisoformat(str(manifest["window_end"]))
+    if window_end < window_start:
+        raise OpexOwnerApplyError("payment override window_end precedes window_start")
+
+    matched_indexes: set[int] = set()
+    removed_rows: list[dict[str, Any]] = []
+    inserted_rows: list[dict[str, Any]] = []
+    new_ref_ids: set[str] = set()
+
+    for obligation in manifest["obligations"]:
+        for key in (
+            "obligation_id",
+            "display_name",
+            "category",
+            "commit_date",
+            "amount_kzt",
+            "commit_type",
+            "scenario_tag",
+            "ref_id",
+            "supersedes",
+        ):
+            if obligation.get(key) in (None, "", []):
+                raise OpexOwnerApplyError(
+                    f"payment override obligation {obligation.get('obligation_id')} missing {key}"
+                )
+
+        commit_date = date.fromisoformat(str(obligation["commit_date"]))
+        if not window_start <= commit_date <= window_end:
+            raise OpexOwnerApplyError(
+                f"payment override date outside governed window: {obligation['commit_date']}"
+            )
+        amount_kzt = float(obligation["amount_kzt"])
+        if amount_kzt <= 0:
+            raise OpexOwnerApplyError("payment override amount_kzt must be positive")
+        if obligation["commit_type"] != "OPEX":
+            raise OpexOwnerApplyError("payment override commit_type must be OPEX")
+
+        minimum_withdrawal = obligation.get("minimum_bank_withdrawal_date")
+        if obligation["category"] == "loan_payment":
+            if not minimum_withdrawal:
+                raise OpexOwnerApplyError(
+                    f"loan payment {obligation['obligation_id']} missing minimum_bank_withdrawal_date"
+                )
+            withdrawal_date = date.fromisoformat(str(minimum_withdrawal))
+            if (withdrawal_date - commit_date).days < 1:
+                raise OpexOwnerApplyError(
+                    f"loan payment {obligation['obligation_id']} violates owner pay-date convention"
+                )
+
+        ref_id = str(obligation["ref_id"])
+        if ref_id in new_ref_ids or any(str(row.get("ref_id") or "") == ref_id for row in rows):
+            raise OpexOwnerApplyError(f"payment override ref_id is not unique: {ref_id}")
+        new_ref_ids.add(ref_id)
+
+        superseded_labels: list[str] = []
+        for selector in obligation["supersedes"]:
+            selector_date = str(selector.get("commit_date") or "")
+            selector_ref = str(selector.get("ref_id") or "")
+            selector_amount = float(selector.get("amount_kzt") or 0.0)
+            matches = [
+                index
+                for index, row in enumerate(rows)
+                if index not in matched_indexes
+                and row.get("commit_date") == selector_date
+                and str(row.get("ref_id") or "") == selector_ref
+                and float(row.get("amount_kzt") or 0.0) == selector_amount
+            ]
+            if len(matches) != 1:
+                raise OpexOwnerApplyError(
+                    "payment override preimage mismatch for "
+                    f"{selector_ref}@{selector_date}:{selector_amount:g}; matches={len(matches)}"
+                )
+            match_index = matches[0]
+            matched_indexes.add(match_index)
+            removed_rows.append(dict(rows[match_index]))
+            superseded_labels.append(f"{selector_ref}@{selector_date}:{selector_amount:g}")
+
+        notes_parts = [
+            f"{obligation['category']}: {obligation['display_name']}",
+            "source=owner_stated_pay_date",
+            f"planned_outflow_date={obligation['commit_date']}",
+            "tags=owner_stated_pay_date",
+            f"run_id={manifest['run_id']}",
+            f"owner_decision={manifest['decision_id']}",
+            f"supersedes={','.join(superseded_labels)}",
+        ]
+        if minimum_withdrawal:
+            notes_parts.append(f"minimum_bank_withdrawal_date={minimum_withdrawal}")
+            notes_parts.append("owner_pay_date_convention=at_least_1_day_before_bank_withdrawal")
+        else:
+            notes_parts.append("owner_pay_date_convention=planned_outflow_date")
+
+        inserted_rows.append(
+            {
+                "commit_date": obligation["commit_date"],
+                "commit_type": obligation["commit_type"],
+                "amount_kzt": amount_kzt,
+                "scenario_tag": obligation["scenario_tag"],
+                "ref_id": ref_id,
+                "notes": "; ".join(notes_parts),
+            }
+        )
+
+    output_rows = [row for index, row in enumerate(rows) if index not in matched_indexes]
+    output_rows.extend(inserted_rows)
+    output_rows.sort(
+        key=lambda row: (
+            str(row.get("commit_date") or ""),
+            str(row.get("ref_id") or ""),
+            float(row.get("amount_kzt") or 0.0),
+        )
+    )
+    report = {
+        "path": str(manifest_path),
+        "sha256": _sha256_file(manifest_path),
+        "decision_id": manifest["decision_id"],
+        "run_id": manifest["run_id"],
+        "owner_pay_date_convention": manifest["owner_pay_date_convention"],
+        "obligation_count": len(inserted_rows),
+        "obligation_total_kzt": sum(float(row["amount_kzt"]) for row in inserted_rows),
+        "removed_count": len(removed_rows),
+        "removed_rows": removed_rows,
+        "inserted_rows": inserted_rows,
+    }
+    return output_rows, report
 
 
 def _append_flags(line: NormalizedOpexLine, *flags: str) -> tuple[str, ...]:
@@ -164,13 +332,14 @@ def _apply_owner_stage_b_overrides(normalized: dict[str, Any]) -> dict[str, Any]
     return patched
 
 
-def build_owner_approved_commitments(
+def _build_owner_approved_commitments_with_report(
     *,
     workbook_path: Path,
     as_of: date,
     horizon_days: int,
     variant: str = DEFAULT_VARIANT,
-) -> list[dict[str, Any]]:
+    payment_override_path: Path | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     normalized = normalize_workbook(workbook_path, as_of=as_of, horizon_days=horizon_days)
     normalized = _apply_owner_stage_b_overrides(normalized)
     rows = build_variant_commitments(
@@ -179,6 +348,27 @@ def build_owner_approved_commitments(
         as_of=as_of,
         horizon_days=horizon_days,
         scenario_tag="base",
+    )
+    payment_override_report: dict[str, Any] = {}
+    if payment_override_path is not None:
+        rows, payment_override_report = _apply_payment_override_manifest(rows, payment_override_path)
+    return rows, payment_override_report
+
+
+def build_owner_approved_commitments(
+    *,
+    workbook_path: Path,
+    as_of: date,
+    horizon_days: int,
+    variant: str = DEFAULT_VARIANT,
+    payment_override_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    rows, _ = _build_owner_approved_commitments_with_report(
+        workbook_path=workbook_path,
+        as_of=as_of,
+        horizon_days=horizon_days,
+        variant=variant,
+        payment_override_path=payment_override_path,
     )
     return rows
 
@@ -192,6 +382,7 @@ def _write_schedule_yaml(
     horizon_days: int,
     rows: list[dict[str, Any]],
     variant: str,
+    payment_override_report: dict[str, Any],
 ) -> None:
     payload = {
         "source_xlsx": str(workbook_path),
@@ -208,6 +399,15 @@ def _write_schedule_yaml(
         },
         "columns": COMMITMENT_COLUMNS,
     }
+    if payment_override_report:
+        payload["payment_override"] = {
+            "path": payment_override_report["path"],
+            "sha256": payment_override_report["sha256"],
+            "decision_id": payment_override_report["decision_id"],
+            "run_id": payment_override_report["run_id"],
+            "obligation_count": payment_override_report["obligation_count"],
+            "obligation_total_kzt": payment_override_report["obligation_total_kzt"],
+        }
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
@@ -220,6 +420,7 @@ def _write_outputs(
     as_of: date,
     horizon_days: int,
     variant: str,
+    payment_override_report: dict[str, Any],
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "opex_commitments.csv"
@@ -233,6 +434,7 @@ def _write_outputs(
         horizon_days=horizon_days,
         rows=rows,
         variant=variant,
+        payment_override_report=payment_override_report,
     )
     return csv_path, yaml_path
 
@@ -294,6 +496,7 @@ def apply_opex_owner_input_schedule(
     horizon_days: int,
     apply: bool,
     variant: str = DEFAULT_VARIANT,
+    payment_override_path: Path | None = None,
     expected_pre_sha256: str | None = None,
     backup_dir: Path | None = None,
 ) -> dict[str, Any]:
@@ -303,12 +506,15 @@ def apply_opex_owner_input_schedule(
         raise FileNotFoundError(f"db not found: {db_path}")
     if not owner_decision_path.exists():
         raise FileNotFoundError(f"owner decision not found: {owner_decision_path}")
+    if payment_override_path is not None and not payment_override_path.exists():
+        raise FileNotFoundError(f"payment override not found: {payment_override_path}")
 
-    rows = build_owner_approved_commitments(
+    rows, payment_override_report = _build_owner_approved_commitments_with_report(
         workbook_path=workbook_path,
         as_of=as_of,
         horizon_days=horizon_days,
         variant=variant,
+        payment_override_path=payment_override_path,
     )
     csv_path, yaml_path = _write_outputs(
         output_dir=output_dir,
@@ -318,6 +524,7 @@ def apply_opex_owner_input_schedule(
         as_of=as_of,
         horizon_days=horizon_days,
         variant=variant,
+        payment_override_report=payment_override_report,
     )
 
     apply_metadata: dict[str, Any] = {}
@@ -412,6 +619,7 @@ def apply_opex_owner_input_schedule(
         "history_rows_preserved": int(history_rows),
         "csv_path": str(csv_path),
         "yaml_path": str(yaml_path),
+        "payment_override": payment_override_report,
         "apply_metadata": apply_metadata,
     }
 
@@ -429,6 +637,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--owner-decision", type=Path, default=DEFAULT_OWNER_DECISION)
+    parser.add_argument("--payment-override", type=Path, default=DEFAULT_PAYMENT_OVERRIDE)
     parser.add_argument("--as-of", default=DEFAULT_AS_OF.isoformat())
     parser.add_argument("--horizon-days", type=int, default=DEFAULT_HORIZON_DAYS)
     parser.add_argument("--variant", default=DEFAULT_VARIANT)
@@ -450,6 +659,7 @@ def main() -> int:
             as_of=date.fromisoformat(str(args.as_of)),
             horizon_days=int(args.horizon_days),
             variant=str(args.variant),
+            payment_override_path=args.payment_override.expanduser() if args.payment_override else None,
             apply=bool(args.apply),
             expected_pre_sha256=args.expected_pre_sha256,
             backup_dir=args.backup_dir.expanduser() if args.backup_dir else None,
@@ -469,6 +679,9 @@ def main() -> int:
     print(f"yaml_path={report['yaml_path']}")
     if report["apply_metadata"].get("backup_path"):
         print(f"backup_path={report['apply_metadata']['backup_path']}")
+    if report["payment_override"]:
+        print(f"payment_override_run_id={report['payment_override']['run_id']}")
+        print(f"payment_override_total_kzt={report['payment_override']['obligation_total_kzt']}")
     print("APPLY" if args.apply else "DRY RUN")
     return 0
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from datetime import date, datetime
@@ -10,7 +11,10 @@ from openpyxl import Workbook
 import pytest
 
 from scripts.apply_opex_owner_input_schedule import (
+    DEFAULT_PAYMENT_OVERRIDE,
     DEFAULT_VARIANT,
+    OpexOwnerApplyError,
+    _apply_payment_override_manifest,
     apply_opex_owner_input_schedule,
     build_owner_approved_commitments,
 )
@@ -369,6 +373,7 @@ def test_actual_owner_workbook_monthly_opex_matches_decision_if_present() -> Non
         as_of=date(2026, 7, 2),
         horizon_days=365,
         variant=DEFAULT_VARIANT,
+        payment_override_path=DEFAULT_PAYMENT_OVERRIDE,
     )
     monthly = sum(
         float(row["amount_kzt"])
@@ -376,4 +381,113 @@ def test_actual_owner_workbook_monthly_opex_matches_decision_if_present() -> Non
         if date(2026, 7, 2) <= date.fromisoformat(row["commit_date"]) <= date(2026, 8, 1)
     )
 
-    assert monthly == 2610967.0
+    assert monthly == 2723967.0
+
+
+def _write_payment_override_fixture(path: Path, source_path: Path, *, preimage_amount: int = 80000) -> None:
+    payload = {
+        "schema_version": "cashflow_commitment_owner_override.v1",
+        "decision_id": "TEST_OWNER_PAYMENT_OVERRIDE",
+        "captured_at_local": "2026-07-17T21:55:00+05:00",
+        "run_id": "test_owner_payment_override",
+        "scope": "test",
+        "source_file": str(source_path),
+        "owner_pay_date_convention": {
+            "date_authority": "owner_stated_pay_date",
+            "cashflow_treatment": "planned_outflow_date",
+            "loan_withdrawal_constraint": "at least one calendar day after owner-stated date",
+        },
+        "window_start": "2026-07-18",
+        "window_end": "2026-07-31",
+        "expected_obligation_count": 1,
+        "expected_total_kzt": 184000,
+        "obligations": [
+            {
+                "obligation_id": "kaspi_store-d_pay_gold",
+                "display_name": "Kaspi 11KZ (pay+gold)",
+                "category": "loan_payment",
+                "commit_date": "2026-07-18",
+                "amount_kzt": 184000,
+                "commit_type": "OPEX",
+                "scenario_tag": "base",
+                "ref_id": "OPEX_OWNER_TEST_11KZ_PAY_GOLD",
+                "minimum_bank_withdrawal_date": "2026-07-19",
+                "supersedes": [
+                    {
+                        "commit_date": "2026-07-17",
+                        "amount_kzt": preimage_amount,
+                        "ref_id": "PAY_11KZ",
+                    },
+                    {
+                        "commit_date": "2026-07-17",
+                        "amount_kzt": 80000,
+                        "ref_id": "GOLD_11KZ",
+                    },
+                ],
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_payment_override_replaces_exact_preimages_and_tags_inserted_row(tmp_path: Path) -> None:
+    source = tmp_path / "owner.md"
+    source.write_text("owner input", encoding="utf-8")
+    manifest = tmp_path / "override.json"
+    _write_payment_override_fixture(manifest, source)
+    rows = [
+        {
+            "commit_date": "2026-07-17",
+            "commit_type": "OPEX",
+            "amount_kzt": 80000.0,
+            "scenario_tag": "base",
+            "ref_id": "PAY_11KZ",
+            "notes": "old pay",
+        },
+        {
+            "commit_date": "2026-07-17",
+            "commit_type": "OPEX",
+            "amount_kzt": 80000.0,
+            "scenario_tag": "base",
+            "ref_id": "GOLD_11KZ",
+            "notes": "old gold",
+        },
+    ]
+
+    updated, report = _apply_payment_override_manifest(rows, manifest)
+
+    assert len(updated) == 1
+    assert updated[0]["commit_date"] == "2026-07-18"
+    assert updated[0]["amount_kzt"] == 184000.0
+    assert "tags=owner_stated_pay_date" in updated[0]["notes"]
+    assert "run_id=test_owner_payment_override" in updated[0]["notes"]
+    assert report["removed_count"] == 2
+    assert report["obligation_total_kzt"] == 184000.0
+
+
+def test_payment_override_fails_closed_on_preimage_drift(tmp_path: Path) -> None:
+    source = tmp_path / "owner.md"
+    source.write_text("owner input", encoding="utf-8")
+    manifest = tmp_path / "override.json"
+    _write_payment_override_fixture(manifest, source, preimage_amount=81000)
+    rows = [
+        {
+            "commit_date": "2026-07-17",
+            "commit_type": "OPEX",
+            "amount_kzt": 80000.0,
+            "scenario_tag": "base",
+            "ref_id": "PAY_11KZ",
+            "notes": "old pay",
+        },
+        {
+            "commit_date": "2026-07-17",
+            "commit_type": "OPEX",
+            "amount_kzt": 80000.0,
+            "scenario_tag": "base",
+            "ref_id": "GOLD_11KZ",
+            "notes": "old gold",
+        },
+    ]
+
+    with pytest.raises(OpexOwnerApplyError, match="preimage mismatch"):
+        _apply_payment_override_manifest(rows, manifest)

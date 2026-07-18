@@ -81,6 +81,25 @@ The 2026-07-02 decision resolves these REVIEW items for Stage B:
 Only unpaid or to-be-paid dates at or after the Stage-B boundary are inserted into future
 commitments. Paid dates remain historical evidence and do not create new future commitments.
 
+## July 2026 Owner-Stated Pay-Date Override
+
+The owner decision
+`config/owner_decisions/july_payment_commitments_2026_07_17.json` is the newer
+authority for the four remaining July obligations named there. It overrides only
+the exact July 2026 commitment preimages pinned in that file; later recurring
+months remain governed by the 2026-07-02 workbook schedule.
+
+For these rows, the owner-stated date is the planned cash outflow date. For loan
+payments it must be at least one calendar day before the bank withdrawal date; a
+contractual due date or withdrawal date must not replace it in the commitment
+calendar. Applied rows carry the `owner_stated_pay_date` tag and the decision's
+run ID in `notes` because `fact_cashflow_commitments` has no dedicated provenance
+or run-ID columns.
+
+The Stage-B writer applies this overlay fail-closed: every superseded row must
+match its pinned date, ref ID, and amount exactly before any generated output or
+DB replacement is accepted.
+
 ## DB Write Contract
 
 The Stage-B writer is dry-run by default. Apply requires both:
