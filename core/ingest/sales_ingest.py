@@ -3,8 +3,9 @@ TASK-176: Sales Ingestion Module (Phase 10)
 
 Parses sales Excel files and ingests to sales_fact_v2 and stock_ledger.
 
-Key constraint: Unique key is (order_id, store_code, kaspi_offer_name, sku_key, my_size)
-- Same order can have same kaspi_offer_name with qty=2 but different sizes
+Key constraint: public-offer grain is stable across employee size corrections.
+- Same order can have the same display name on multiple real lines only when
+  distinct source Kaspi articles prove those lines.
 - Same order can have different kaspi_offer_name with same sku_id
 - sku_id is resolved from (sku_key, my_size) when possible to avoid false dedup
 
@@ -16,6 +17,7 @@ Tables used:
 
 import sqlite3
 import re
+import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -80,6 +82,42 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:
+    if not _table_exists(conn, name):
+        return set()
+    return {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({name})").fetchall()
+    }
+
+
+def _normalize_kaspi_article(value: object) -> str:
+    text = _clean_identity_value(value)
+    return str(text or "").strip().upper()
+
+
+def _line_identity_key(
+    value: object,
+    *,
+    source_entry_id: object = None,
+) -> str:
+    """Return the stable source-proven public-offer line key."""
+    entry_id = _clean_identity_value(source_entry_id)
+    if entry_id:
+        return f"ENTRY:{entry_id}"
+    article = _normalize_kaspi_article(value)
+    return f"ARTICLE:{article}" if article else ""
+
+
+def _has_public_article_line_schema(
+    conn: sqlite3.Connection,
+    table: str,
+) -> bool:
+    return {"kaspi_article", "line_identity_key"}.issubset(
+        _table_columns(conn, table)
+    )
 
 
 def _clean_identity_value(value: object) -> str | None:
@@ -179,6 +217,21 @@ def build_sales_dedupe_key(
         str(sku_key or ""),
         str(my_size or ""),
     )
+
+
+def _source_offer_articles(records: list[dict]) -> dict[tuple[str, str, str], set[str]]:
+    """Return exact source articles observed for each order/store/display offer."""
+    articles: dict[tuple[str, str, str], set[str]] = {}
+    for record in records:
+        key = (
+            str(record.get("order_id") or ""),
+            str(record.get("store_code") or ""),
+            str(record.get("kaspi_offer_name") or ""),
+        )
+        article = _normalize_kaspi_article(record.get("kaspi_article"))
+        if article:
+            articles.setdefault(key, set()).add(article)
+    return articles
 
 
 def resolve_sales_identity_detail(
@@ -622,6 +675,138 @@ def get_unmapped_offers(
     return sorted(unmapped.values(), key=lambda x: -x["order_count"])
 
 
+def _active_stock_quarantine_pairs(conn: sqlite3.Connection) -> set[tuple[str, str]]:
+    """Return source store/order pairs whose existing policy excludes stock."""
+
+    pairs: set[tuple[str, str]] = set()
+    for table in (
+        "fact_order_entry_header_only_source_gap_quarantine",
+        "fact_order_entry_product_identity_quarantine",
+    ):
+        if not _table_exists(conn, table):
+            continue
+        columns = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        required = {
+            "store_code",
+            "order_id",
+            "active_flag",
+            "publication_exclusion_required",
+            "product_stock_excluded",
+        }
+        if not required.issubset(columns):
+            continue
+        for row in conn.execute(
+            f"""
+            SELECT store_code, order_id
+            FROM {table}
+            WHERE COALESCE(active_flag, 1) = 1
+              AND COALESCE(publication_exclusion_required, 0) = 1
+              AND COALESCE(product_stock_excluded, 0) = 1
+            """
+        ).fetchall():
+            pairs.add(
+                (
+                    normalize_store_code(str(row["store_code"] or "UNIVERSAL")),
+                    str(row["order_id"] or "").strip(),
+                )
+            )
+    return pairs
+
+
+def _ledger_event_idempotency_key(event: dict) -> str:
+    identity = "|".join(
+        [
+            "sales-ingest-ledger-v2",
+            str(event["event_type"]),
+            str(event["reference_id"]),
+            str(event["event_date"]),
+            str(event["sku_key"]),
+            str(event["sku_id"]),
+            str(event["my_size"]),
+            str(event.get("kaspi_offer_name") or ""),
+            str(event.get("line_identity_key") or event.get("kaspi_article") or ""),
+            str(event["store_code"]),
+            str(event["qty_change"]),
+        ]
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _ledger_event_state(event: dict, *, db_path: Path) -> str:
+    """Classify one expected event as missing, exact, or conflicting."""
+
+    event_date = event["event_date"]
+    if isinstance(event_date, date):
+        event_date = event_date.isoformat()
+    with get_db(db_path) as conn:
+        stock_columns = _table_columns(conn, "stock_ledger")
+        article_clause = ""
+        article_params: list[str] = []
+        line_key = _line_identity_key(
+            event.get("line_identity_key") or event.get("kaspi_article")
+        )
+        if line_key and {"kaspi_article", "line_identity_key"}.issubset(stock_columns):
+            article_clause = (
+                " AND UPPER(TRIM(COALESCE(line_identity_key, kaspi_article, ''))) = ?"
+            )
+            article_params.append(line_key)
+        rows = conn.execute(
+            f"""
+            SELECT event_date, sku_key, sku_id, my_size, qty_change,
+                   kaspi_offer_name
+            FROM stock_ledger
+            WHERE UPPER(COALESCE(event_type, '')) = UPPER(?)
+              AND CAST(reference_id AS TEXT) = ?
+              AND UPPER(COALESCE(reference_type, '')) = 'SALE'
+              AND sku_id = ?
+              AND UPPER(COALESCE(store_code, 'UNIVERSAL')) = ?
+              AND COALESCE(kaspi_offer_name, '') = COALESCE(?, '')
+              {article_clause}
+            ORDER BY ledger_id
+            """,
+            [
+                event["event_type"],
+                str(event["reference_id"]),
+                event["sku_id"],
+                str(event["store_code"]).upper(),
+                event.get("kaspi_offer_name"),
+                *article_params,
+            ],
+        ).fetchall()
+    if not rows:
+        return "MISSING"
+    exact = [
+        row
+        for row in rows
+        if str(row["event_date"] or "") == str(event_date)
+        and str(row["sku_key"] or "") == str(event["sku_key"])
+        and str(row["sku_id"] or "") == str(event["sku_id"])
+        and str(row["my_size"] or "").strip().upper()
+        == str(event["my_size"]).strip().upper()
+        and int(row["qty_change"] or 0) == int(event["qty_change"])
+    ]
+    if len(rows) == 1 and len(exact) == 1:
+        return "EXACT"
+    return "CONFLICT"
+
+
+def _queue_ledger_event(
+    pending: list[dict],
+    *,
+    quarantines: set[tuple[str, str]],
+    source_store_code: str,
+    event: dict,
+    result: dict,
+) -> None:
+    pair = (normalize_store_code(source_store_code), str(event["reference_id"]).strip())
+    if pair in quarantines:
+        result["ledger_quarantined"] += 1
+        return
+    pending.append(event)
+
+
 def ingest_sales(
     xlsx_path: str,
     sheet_name: str = "SALES_KSP_CRM_1",
@@ -632,7 +817,9 @@ def ingest_sales(
     """
     Ingest sales from Excel to sales_fact_v2 and stock_ledger.
 
-    Deduplication key: (order_id, store_code, kaspi_offer_name, sku_key, my_size)
+    Exact identity uses resolved SKU fields, but a changed size for an existing
+    order/store/display offer fails closed unless distinct source Kaspi articles
+    prove a genuine multi-line order.
 
     Steps:
     1. Parse Excel
@@ -658,6 +845,7 @@ def ingest_sales(
         source_file = Path(xlsx_path).name
 
     records = parse_sales_excel(xlsx_path, sheet_name)
+    source_offer_articles = _source_offer_articles(records)
 
     result = {
         "inserted": 0,
@@ -665,6 +853,8 @@ def ingest_sales(
         "returns_processed": 0,
         "unmapped": [],
         "ledger_events": 0,
+        "ledger_quarantined": 0,
+        "lifecycle_conflicts": [],
         "errors": [],
     }
 
@@ -672,10 +862,34 @@ def ingest_sales(
     pending_ledger_events = []
 
     with get_db(db_path) as conn:
+        active_stock_quarantines = _active_stock_quarantine_pairs(conn)
+        sales_has_article_grain = _has_public_article_line_schema(
+            conn, "sales_fact_v2"
+        )
+        preexisting_offer_keys: set[tuple[str, str, str]] = set()
+        for record in records:
+            offer_key = (
+                str(record.get("order_id") or ""),
+                str(record.get("store_code") or ""),
+                str(record.get("kaspi_offer_name") or ""),
+            )
+            if offer_key in preexisting_offer_keys:
+                continue
+            if conn.execute(
+                """
+                SELECT 1 FROM sales_fact_v2
+                WHERE order_id = ? AND store_code = ? AND kaspi_offer_name = ?
+                LIMIT 1
+                """,
+                offer_key,
+            ).fetchone():
+                preexisting_offer_keys.add(offer_key)
         for rec in records:
             order_id = rec["order_id"]
             store_code = rec["store_code"]
             kaspi_offer_name = rec["kaspi_offer_name"]
+            kaspi_article = _normalize_kaspi_article(rec.get("kaspi_article"))
+            line_identity_key = _line_identity_key(kaspi_article)
 
             sku_key, sku_id, my_size = resolve_sales_identity(
                 conn,
@@ -692,24 +906,110 @@ def ingest_sales(
                     result["unmapped"].append({"offer": kaspi_offer_name, "order_id": order_id})
                 continue
 
-            # Check for existing record (dedup)
-            existing = conn.execute("""
-                SELECT sale_id, return_flag FROM sales_fact_v2
+            stable_offer_columns = "sale_id, sku_key, sku_id, my_size"
+            if sales_has_article_grain:
+                stable_offer_columns += ", kaspi_article, line_identity_key"
+            stable_offer_rows = conn.execute(
+                f"""
+                SELECT {stable_offer_columns}
+                FROM sales_fact_v2
                 WHERE order_id = ? AND store_code = ? AND kaspi_offer_name = ?
-                  AND sku_key = ? AND my_size = ?
-            """, (
-                order_id,
-                store_code,
-                kaspi_offer_name,
-                sku_key,
-                my_size,
-            )).fetchone()
+                ORDER BY sale_id
+                """,
+                (order_id, store_code, kaspi_offer_name),
+            ).fetchall()
 
-            if not existing:
-                existing = conn.execute("""
+            existing = None
+            conflict_reason = ""
+            if sales_has_article_grain and kaspi_article:
+                article_rows = conn.execute(
+                    """
+                    SELECT sale_id, return_flag, sku_key, sku_id, my_size
+                    FROM sales_fact_v2
+                    WHERE order_id = ?
+                      AND UPPER(TRIM(COALESCE(store_code, ''))) = ?
+                      AND UPPER(TRIM(COALESCE(kaspi_article, ''))) = ?
+                    ORDER BY sale_id
+                    """,
+                    (order_id, str(store_code).strip().upper(), kaspi_article),
+                ).fetchall()
+                if len(article_rows) > 1:
+                    conflict_reason = "duplicate_existing_public_article_lines"
+                elif article_rows:
+                    article_row = article_rows[0]
+                    if (
+                        str(article_row["sku_key"] or "") == str(sku_key or "")
+                        and str(article_row["sku_id"] or "") == str(sku_id or "")
+                        and str(article_row["my_size"] or "").strip().upper()
+                        == str(my_size or "").strip().upper()
+                    ):
+                        existing = article_row
+                    else:
+                        conflict_reason = "size_correction_for_existing_public_article"
+                elif any(
+                    not _normalize_kaspi_article(row["kaspi_article"])
+                    for row in stable_offer_rows
+                ):
+                    conflict_reason = "legacy_blank_article_collision"
+            else:
+                existing = conn.execute(
+                    """
                     SELECT sale_id, return_flag FROM sales_fact_v2
-                    WHERE order_id = ? AND sku_id = ? AND store_code = ? AND kaspi_offer_name = ?
-                """, (order_id, sku_id, store_code, kaspi_offer_name)).fetchone()
+                    WHERE order_id = ? AND store_code = ? AND kaspi_offer_name = ?
+                      AND sku_key = ? AND my_size = ?
+                    """,
+                    (order_id, store_code, kaspi_offer_name, sku_key, my_size),
+                ).fetchone()
+                if not existing:
+                    existing = conn.execute(
+                        """
+                        SELECT sale_id, return_flag FROM sales_fact_v2
+                        WHERE order_id = ? AND sku_id = ? AND store_code = ?
+                          AND kaspi_offer_name = ?
+                        """,
+                        (order_id, sku_id, store_code, kaspi_offer_name),
+                    ).fetchone()
+                if not existing:
+                    source_grain = (order_id, store_code, kaspi_offer_name)
+                    multi_article_proven = (
+                        len(source_offer_articles.get(source_grain, set())) > 1
+                    )
+                    if stable_offer_rows and (
+                        source_grain in preexisting_offer_keys
+                        or not multi_article_proven
+                    ):
+                        conflict_reason = (
+                            "unproven_size_correction_for_existing_public_offer"
+                        )
+
+            if conflict_reason:
+                result["lifecycle_conflicts"].append(
+                    {
+                        "order_id": order_id,
+                        "store_code": store_code,
+                        "kaspi_offer_name": kaspi_offer_name,
+                        "kaspi_article": kaspi_article,
+                        "existing_sale_ids": [
+                            int(row["sale_id"]) for row in stable_offer_rows
+                        ],
+                        "existing_identities": [
+                            {
+                                "sku_key": str(row["sku_key"] or ""),
+                                "sku_id": str(row["sku_id"] or ""),
+                                "my_size": str(row["my_size"] or ""),
+                            }
+                            for row in stable_offer_rows
+                        ],
+                        "incoming_identity": {
+                            "sku_key": str(sku_key or ""),
+                            "sku_id": str(sku_id or ""),
+                            "my_size": str(my_size or ""),
+                        },
+                        "reason": conflict_reason,
+                    }
+                )
+                result["skipped"] += 1
+                continue
 
             if existing:
                 # Check if return status changed
@@ -726,18 +1026,28 @@ def ingest_sales(
 
                     # Queue RETURN event to ledger (stock increase)
                     if apply_to_ledger:
-                        pending_ledger_events.append({
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "RETURN",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": rec["quantity"],
                             "event_date": date.today(),
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
+                            "kaspi_article": kaspi_article,
+                            "line_identity_key": line_identity_key,
                             "notes": "Return detected on re-ingest",
                             "input_source": "IMPORT",
-                        })
+                            },
+                        )
 
                     result["returns_processed"] += 1
                 else:
@@ -746,13 +1056,23 @@ def ingest_sales(
 
             # Insert new sale
             try:
-                cursor = conn.execute("""
-                    INSERT INTO sales_fact_v2 (
-                        order_id, order_date, sku_key, sku_id, my_size,
-                        kaspi_offer_name, store_code, quantity, sell_price_kzt,
-                        delivery_fee, net_rev, status, return_flag, source_file
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
+                insert_fields = [
+                    "order_id",
+                    "order_date",
+                    "sku_key",
+                    "sku_id",
+                    "my_size",
+                    "kaspi_offer_name",
+                    "store_code",
+                    "quantity",
+                    "sell_price_kzt",
+                    "delivery_fee",
+                    "net_rev",
+                    "status",
+                    "return_flag",
+                    "source_file",
+                ]
+                insert_values = [
                     order_id,
                     rec["order_date"].isoformat() if isinstance(rec["order_date"], date) else rec["order_date"],
                     sku_key,
@@ -767,7 +1087,15 @@ def ingest_sales(
                     "RETURNED" if rec["return_flag"] else "DELIVERED",
                     rec["return_flag"],
                     source_file,
-                ))
+                ]
+                if sales_has_article_grain:
+                    insert_fields.extend(["kaspi_article", "line_identity_key"])
+                    insert_values.extend([kaspi_article or None, line_identity_key or None])
+                cursor = conn.execute(
+                    f"INSERT INTO sales_fact_v2 ({', '.join(insert_fields)}) "
+                    f"VALUES ({', '.join('?' for _ in insert_fields)})",
+                    insert_values,
+                )
 
                 result["inserted"] += 1
 
@@ -775,44 +1103,74 @@ def ingest_sales(
                 if apply_to_ledger:
                     if rec["return_flag"]:
                         # This is a historical return - add both SALE and RETURN events
-                        pending_ledger_events.append({
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "SALE",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": -rec["quantity"],
                             "event_date": rec["order_date"],
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
+                            "kaspi_article": kaspi_article,
+                            "line_identity_key": line_identity_key,
                             "notes": "Historical sale with return",
                             "input_source": "IMPORT",
-                        })
-                        pending_ledger_events.append({
+                            },
+                        )
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "RETURN",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": rec["quantity"],
                             "event_date": rec["order_date"],
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
+                            "kaspi_article": kaspi_article,
+                            "line_identity_key": line_identity_key,
                             "notes": "Historical return",
                             "input_source": "IMPORT",
-                        })
+                            },
+                        )
                         result["returns_processed"] += 1
                     else:
                         # Normal sale - SALE event (stock decrease)
-                        pending_ledger_events.append({
+                        _queue_ledger_event(
+                            pending_ledger_events,
+                            quarantines=active_stock_quarantines,
+                            source_store_code=store_code,
+                            result=result,
+                            event={
                             "event_type": "SALE",
+                            "sku_key": sku_key,
                             "sku_id": sku_id,
+                            "my_size": my_size,
                             "qty_change": -rec["quantity"],
                             "event_date": rec["order_date"],
-                            "store_code": store_code,
+                            "store_code": inventory_pool_store_code(),
                             "reference_id": order_id,
                             "reference_type": "SALE",
                             "kaspi_offer_name": kaspi_offer_name,
+                            "kaspi_article": kaspi_article,
+                            "line_identity_key": line_identity_key,
                             "input_source": "IMPORT",
-                        })
+                            },
+                        )
 
             except sqlite3.IntegrityError as e:
                 # Duplicate - should be caught by check above
@@ -822,23 +1180,34 @@ def ingest_sales(
 
     # Now add ledger events outside the main transaction
     for event in pending_ledger_events:
-        try:
-            add_ledger_event(
-                event_type=event["event_type"],
-                sku_id=event["sku_id"],
-                qty_change=event["qty_change"],
-                event_date=event["event_date"],
-                store_code=inventory_pool_store_code(),
-                reference_id=event["reference_id"],
-                reference_type=event["reference_type"],
-                kaspi_offer_name=event.get("kaspi_offer_name"),
-                notes=event.get("notes"),
-                input_source=event["input_source"],
-                db_path=db_path,
+        state = _ledger_event_state(event, db_path=db_path)
+        if state == "EXACT":
+            continue
+        if state != "MISSING":
+            raise RuntimeError(
+                "stock ledger identity exists with duplicate or mismatched payload: "
+                f"event_type={event['event_type']} reference_id={event['reference_id']} "
+                f"sku_id={event['sku_id']} offer={event.get('kaspi_offer_name')!r}"
             )
-            result["ledger_events"] += 1
-        except Exception as e:
-            result["errors"].append(f"Ledger event for {event['sku_id']}: {str(e)}")
+        add_ledger_event(
+            event_type=event["event_type"],
+            sku_key=event["sku_key"],
+            sku_id=event["sku_id"],
+            my_size=event["my_size"],
+            qty_change=event["qty_change"],
+            event_date=event["event_date"],
+            store_code=event["store_code"],
+            reference_id=event["reference_id"],
+            reference_type=event["reference_type"],
+            kaspi_offer_name=event.get("kaspi_offer_name"),
+            kaspi_article=event.get("kaspi_article"),
+            line_identity_key=event.get("line_identity_key"),
+            notes=event.get("notes"),
+            input_source=event["input_source"],
+            idempotency_key=_ledger_event_idempotency_key(event),
+            db_path=db_path,
+        )
+        result["ledger_events"] += 1
 
     # Log audit entry for batch import
     if result["inserted"] > 0:
@@ -869,7 +1238,9 @@ def ingest_sales_to_fact_sales(
     """
     Ingest sales from CRM sheet into fact_sales with v8 economics.
 
-    Deduplication key: (order_id, store_code, kaspi_offer_name, sku_key, my_size)
+    Exact identity uses resolved SKU fields. A changed size at the same stable
+    public-offer grain fails closed unless distinct source articles prove a
+    genuine multi-line order.
     """
     if db_path is None:
         db_path = DEFAULT_DB_PATH
@@ -892,6 +1263,7 @@ def ingest_sales_to_fact_sales(
             if (from_key is None or _date_key(rec) >= from_key)
             and (to_key is None or _date_key(rec) <= to_key)
         ]
+    source_offer_articles = _source_offer_articles(records)
 
     stats = {
         "inserted": 0,
@@ -899,6 +1271,7 @@ def ingest_sales_to_fact_sales(
         "skipped": 0,
         "errors": [],
         "unmapped": [],
+        "lifecycle_conflicts": [],
         "min_date": None,
         "max_date": None,
     }
@@ -907,17 +1280,32 @@ def ingest_sales_to_fact_sales(
         dates = [rec.get("order_date") for rec in records if rec.get("order_date")]
         min_date = min(dates) if dates else None
         max_date = max(dates) if dates else None
+        fact_sales_has_article_grain = _has_public_article_line_schema(
+            conn, "fact_sales"
+        )
 
         existing_by_key: dict[tuple, int] = {}
         existing_by_unique: dict[tuple, int] = {}
-        if min_date and max_date:
+        existing_by_offer: dict[tuple[str, str, str], list[dict[str, str | int]]] = {}
+        existing_by_article: dict[tuple[str, str, str], dict[str, str | int]] = {}
+        order_ids = sorted(
+            {str(rec.get("order_id") or "") for rec in records if rec.get("order_id")}
+        )
+        if order_ids:
+            article_select = (
+                ", kaspi_article, line_identity_key"
+                if fact_sales_has_article_grain
+                else ""
+            )
+            placeholders = ",".join("?" for _ in order_ids)
             existing_rows = conn.execute(
-                """
-                SELECT id, order_id, store_code, kaspi_offer_name, sku_key, my_size, sku_id
+                f"""
+                SELECT id, order_id, store_code, kaspi_offer_name, sku_key,
+                       my_size, sku_id{article_select}
                 FROM fact_sales
-                WHERE order_date BETWEEN ? AND ?
+                WHERE CAST(order_id AS TEXT) IN ({placeholders})
                 """,
-                (min_date, max_date),
+                order_ids,
             ).fetchall()
             for row in existing_rows:
                 key = (
@@ -935,6 +1323,43 @@ def ingest_sales_to_fact_sales(
                 )
                 existing_by_key[key] = row["id"]
                 existing_by_unique[unique_key] = row["id"]
+                offer_key = (
+                    str(row["order_id"]),
+                    str(row["store_code"]),
+                    str(row["kaspi_offer_name"] or ""),
+                )
+                existing_by_offer.setdefault(offer_key, []).append(
+                    {
+                        "id": int(row["id"]),
+                        "sku_key": str(row["sku_key"] or ""),
+                        "sku_id": str(row["sku_id"] or ""),
+                        "my_size": str(row["my_size"] or ""),
+                        "kaspi_article": (
+                            _normalize_kaspi_article(row["kaspi_article"])
+                            if fact_sales_has_article_grain
+                            else ""
+                        ),
+                    }
+                )
+                if fact_sales_has_article_grain:
+                    article = _normalize_kaspi_article(row["kaspi_article"])
+                    if article:
+                        article_key = (
+                            str(row["order_id"]),
+                            str(row["store_code"]),
+                            article,
+                        )
+                        if article_key in existing_by_article:
+                            raise RuntimeError(
+                                "fact_sales has duplicate public-article lines: "
+                                f"{article_key}"
+                            )
+                        existing_by_article[article_key] = {
+                            "id": int(row["id"]),
+                            "sku_key": str(row["sku_key"] or ""),
+                            "sku_id": str(row["sku_id"] or ""),
+                            "my_size": str(row["my_size"] or ""),
+                        }
 
         sku_meta = {
             row["sku_key"]: {
@@ -962,6 +1387,8 @@ def ingest_sales_to_fact_sales(
             for row in size_rows
         }
         seen_keys: set[tuple] = set()
+        seen_offer_keys: set[tuple[str, str, str]] = set()
+        seen_article_keys: dict[tuple[str, str, str], tuple[str, str, str]] = {}
         updates: list[tuple] = []
         inserts: list[tuple] = []
 
@@ -970,6 +1397,8 @@ def ingest_sales_to_fact_sales(
             order_date = rec["order_date"]
             store_code = rec["store_code"]
             kaspi_offer_name = rec["kaspi_offer_name"]
+            kaspi_article = _normalize_kaspi_article(rec.get("kaspi_article"))
+            line_identity_key = _line_identity_key(kaspi_article)
             quantity = int(rec["quantity"] or 0)
 
             if quantity <= 0:
@@ -1037,10 +1466,98 @@ def ingest_sales_to_fact_sales(
                 str(sku_key or ""),
                 str(my_size or ""),
             )
+            unique_key = (
+                str(order_id or ""),
+                str(store_code or ""),
+                str(kaspi_offer_name or ""),
+                str(sku_id or ""),
+            )
+            offer_key = (
+                str(order_id or ""),
+                str(store_code or ""),
+                str(kaspi_offer_name or ""),
+            )
+            article_key = (
+                str(order_id or ""),
+                str(store_code or ""),
+                kaspi_article,
+            )
+            incoming_identity = (
+                str(sku_key or ""),
+                str(sku_id or ""),
+                str(my_size or "").strip().upper(),
+            )
+            existing_article_row = (
+                existing_by_article.get(article_key)
+                if fact_sales_has_article_grain and kaspi_article
+                else None
+            )
+            if existing_article_row:
+                exact_existing = (
+                    str(existing_article_row["sku_key"] or ""),
+                    str(existing_article_row["sku_id"] or ""),
+                    str(existing_article_row["my_size"] or "").strip().upper(),
+                ) == incoming_identity
+                lifecycle_collision = not exact_existing
+                collision_reason = "size_correction_for_existing_public_article"
+            elif fact_sales_has_article_grain and kaspi_article:
+                legacy_offer_collision = any(
+                    not str(row.get("kaspi_article") or "").strip()
+                    for row in existing_by_offer.get(offer_key, [])
+                )
+                seen_identity = seen_article_keys.get(article_key)
+                exact_existing = False
+                lifecycle_collision = bool(
+                    legacy_offer_collision
+                    or (seen_identity is not None and seen_identity != incoming_identity)
+                )
+                collision_reason = (
+                    "legacy_blank_article_collision"
+                    if legacy_offer_collision
+                    else "size_correction_for_repeated_public_article_in_batch"
+                )
+            else:
+                multi_article_proven = (
+                    len(source_offer_articles.get(offer_key, set())) > 1
+                )
+                exact_existing = (
+                    dedupe_key in existing_by_key or unique_key in existing_by_unique
+                )
+                lifecycle_collision = bool(
+                    not exact_existing
+                    and (
+                        existing_by_offer.get(offer_key)
+                        or (offer_key in seen_offer_keys and not multi_article_proven)
+                    )
+                )
+                collision_reason = (
+                    "unproven_size_correction_for_existing_public_offer"
+                )
+            if lifecycle_collision:
+                stats["lifecycle_conflicts"].append(
+                    {
+                        "order_id": order_id,
+                        "store_code": store_code,
+                        "kaspi_offer_name": kaspi_offer_name,
+                        "kaspi_article": kaspi_article,
+                        "existing_rows": existing_by_offer.get(offer_key, []),
+                        "incoming_identity": {
+                            "sku_key": str(sku_key or ""),
+                            "sku_id": str(sku_id or ""),
+                            "my_size": str(my_size or ""),
+                        },
+                        "reason": collision_reason,
+                    }
+                )
+                stats["skipped"] += 1
+                continue
             if dedupe_key in seen_keys:
                 stats["skipped"] += 1
                 continue
             seen_keys.add(dedupe_key)
+            seen_offer_keys.add(offer_key)
+            if kaspi_article:
+                seen_article_keys[article_key] = incoming_identity
 
             delivery_fee = rec.get("delivery_fee")
             if delivery_fee is None or delivery_fee <= 0:
@@ -1062,18 +1579,15 @@ def ingest_sales_to_fact_sales(
             cogs_line = cogs_unit * quantity if cogs_unit is not None else None
             profit_line = profit_unit * quantity if profit_unit is not None else None
 
-            existing_id = existing_by_key.get(dedupe_key)
+            existing_id = (
+                int(existing_article_row["id"])
+                if existing_article_row
+                else existing_by_key.get(dedupe_key)
+            )
             if not existing_id:
-                existing_id = existing_by_unique.get(
-                    (
-                        str(order_id or ""),
-                        str(store_code or ""),
-                        str(kaspi_offer_name or ""),
-                        str(sku_id or ""),
-                    )
-                )
+                existing_id = existing_by_unique.get(unique_key)
 
-            payload = (
+            payload = [
                 order_id,
                 kaspi_offer_name,
                 store_code,
@@ -1093,12 +1607,13 @@ def ingest_sales_to_fact_sales(
                 profit_unit,
                 profit_line,
                 "KSP",
-            )
+            ]
+            if fact_sales_has_article_grain:
+                payload.extend([kaspi_article or None, line_identity_key or None])
 
             if existing_id:
                 if not dry_run:
-                    updates.append(
-                        (
+                    update_payload = [
                             kaspi_offer_name,
                             store_code,
                             order_date.isoformat() if isinstance(order_date, date) else order_date,
@@ -1117,9 +1632,13 @@ def ingest_sales_to_fact_sales(
                             profit_unit,
                             profit_line,
                             "KSP",
-                            existing_id,
+                        ]
+                    if fact_sales_has_article_grain:
+                        update_payload.extend(
+                            [kaspi_article or None, line_identity_key or None]
                         )
-                    )
+                    update_payload.append(existing_id)
+                    updates.append(update_payload)
                 stats["updated"] += 1
             else:
                 if not dry_run:
@@ -1135,8 +1654,13 @@ def ingest_sales_to_fact_sales(
 
         if not dry_run:
             if updates:
+                article_update_sql = ""
+                if fact_sales_has_article_grain:
+                    article_update_sql = (
+                        ", kaspi_article = ?, line_identity_key = ?"
+                    )
                 conn.executemany(
-                    """
+                    f"""
                     UPDATE fact_sales
                     SET kaspi_offer_name = ?,
                         store_code = ?,
@@ -1156,20 +1680,28 @@ def ingest_sales_to_fact_sales(
                         profit_unit = ?,
                         profit_line = ?,
                         channel_code = ?
+                        {article_update_sql}
                     WHERE id = ?
                     """,
                     updates,
                 )
             if inserts:
+                article_insert_columns = ""
+                article_insert_placeholders = ""
+                if fact_sales_has_article_grain:
+                    article_insert_columns = ", kaspi_article, line_identity_key"
+                    article_insert_placeholders = ", ?, ?"
                 conn.executemany(
-                    """
+                    f"""
                     INSERT INTO fact_sales (
                         order_id, kaspi_offer_name, store_code, order_date,
                         sku_key, sku_id, my_size, quantity, sell_price_kzt,
                         product_type, channel, delivery_fee,
                         net_rev_unit, line_net_rev, cogs_unit, cogs_line,
                         profit_unit, profit_line, channel_code
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        {article_insert_columns}
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        {article_insert_placeholders})
                     """,
                     inserts,
                 )

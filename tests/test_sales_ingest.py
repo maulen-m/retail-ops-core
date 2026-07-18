@@ -24,6 +24,7 @@ import pandas as pd
 from core.ingest.sales_ingest import (
     parse_sales_excel,
     ingest_sales,
+    ingest_sales_to_fact_sales,
     get_unmapped_offers,
     update_returns_from_api,
     normalize_store_code,
@@ -61,9 +62,16 @@ def test_db():
             notes TEXT,
             input_source TEXT DEFAULT 'SYSTEM',
             created_by TEXT DEFAULT 'system',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            idempotency_key TEXT,
+            kaspi_article TEXT,
+            line_identity_key TEXT
         )
     """)
+    conn.execute(
+        "CREATE UNIQUE INDEX ux_stock_ledger_idempotency_key "
+        "ON stock_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL"
+    )
 
     # Create sales_fact_v2 table
     conn.execute("""
@@ -86,9 +94,17 @@ def test_db():
             api_updated_at DATETIME,
             source_file TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            kaspi_article TEXT,
+            line_identity_key TEXT,
             UNIQUE(order_id, sku_id, store_code, kaspi_offer_name)
         )
     """)
+    conn.execute(
+        "CREATE UNIQUE INDEX ux_sales_fact_v2_order_store_article "
+        "ON sales_fact_v2 (order_id, UPPER(TRIM(store_code)), "
+        "UPPER(TRIM(kaspi_article))) "
+        "WHERE TRIM(COALESCE(kaspi_article, '')) <> ''"
+    )
 
     # Create fact_input_audit table
     conn.execute("""
@@ -492,8 +508,10 @@ class TestIngestSales:
         # Both should be inserted (same order, different offers)
         assert result["inserted"] == 2
 
-    def test_ingest_same_order_same_offer_different_size(self, test_db, tmp_path):
-        """Test same order, same offer, different size are separate records."""
+    def test_ingest_same_order_same_offer_different_size_fails_closed_without_articles(
+        self, test_db, tmp_path
+    ):
+        """An unproven size correction must not create a second sale line."""
         data = {
             "OrderID": ["ORD-SIZE", "ORD-SIZE"],
             "Date": [date.today(), date.today()],
@@ -515,8 +533,269 @@ class TestIngestSales:
 
         result = ingest_sales(xlsx_path=str(xlsx_path), db_path=test_db)
 
-        # Both should be inserted (same order, same offer, different sku_id)
+        assert result["inserted"] == 1
+        assert result["skipped"] == 1
+        assert len(result["lifecycle_conflicts"]) == 1
+        with sqlite3.connect(test_db) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM sales_fact_v2 WHERE order_id='ORD-SIZE'"
+            ).fetchone()[0] == 1
+
+    def test_ingest_same_display_offer_preserves_distinct_source_articles(
+        self, test_db, tmp_path
+    ):
+        """Distinct exact Kaspi articles prove a genuine multi-line order."""
+        data = {
+            "OrderID": ["ORD-MULTI-ARTICLE", "ORD-MULTI-ARTICLE"],
+            "Date": [date.today(), date.today()],
+            "KASPI_OFFER_NAME": ["Shared display name", "Shared display name"],
+            "Kaspi_article": ["ARTICLE-M", "ARTICLE-L"],
+            "SKU_ID": ["CL_LINE52_BLACK_M", "CL_LINE52_BLACK_L"],
+            "SKU_key": ["CL_LINE52_BLACK", "CL_LINE52_BLACK"],
+            "MY_SIZE": ["M", "L"],
+            "Quantity": [1, 1],
+            "Sell_price_kzt": [15000, 15000],
+            "STORE_NAME": ["Universal", "Universal"],
+            "Return": [0, 0],
+        }
+        xlsx_path = tmp_path / "same_offer_distinct_articles.xlsx"
+        pd.DataFrame(data).to_excel(
+            xlsx_path, sheet_name="SALES_KSP_CRM_1", index=False
+        )
+
+        result = ingest_sales(xlsx_path=str(xlsx_path), db_path=test_db)
+
         assert result["inserted"] == 2
+        assert result["lifecycle_conflicts"] == []
+        with sqlite3.connect(test_db) as conn:
+            rows = conn.execute(
+                "SELECT kaspi_article, line_identity_key FROM sales_fact_v2 "
+                "WHERE order_id='ORD-MULTI-ARTICLE' ORDER BY kaspi_article"
+            ).fetchall()
+            ledger_rows = conn.execute(
+                "SELECT kaspi_article, line_identity_key FROM stock_ledger "
+                "WHERE reference_id='ORD-MULTI-ARTICLE' ORDER BY kaspi_article"
+            ).fetchall()
+        assert rows == [
+            ("ARTICLE-L", "ARTICLE:ARTICLE-L"),
+            ("ARTICLE-M", "ARTICLE:ARTICLE-M"),
+        ]
+        assert ledger_rows == rows
+
+    def test_separate_batches_preserve_distinct_articles_with_same_display_offer(
+        self, test_db, tmp_path
+    ):
+        def _write(path: Path, article: str, sku_id: str, size: str) -> None:
+            pd.DataFrame(
+                {
+                    "OrderID": ["ORD-SEPARATE-ARTICLE"],
+                    "Date": [date.today()],
+                    "KASPI_OFFER_NAME": ["Shared display name"],
+                    "Kaspi_article": [article],
+                    "SKU_ID": [sku_id],
+                    "SKU_key": ["CL_LINE52_BLACK"],
+                    "MY_SIZE": [size],
+                    "Quantity": [1],
+                    "Sell_price_kzt": [15000],
+                    "STORE_NAME": ["Universal"],
+                    "Return": [0],
+                }
+            ).to_excel(path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        first_path = tmp_path / "first_article.xlsx"
+        second_path = tmp_path / "second_article.xlsx"
+        _write(first_path, "ARTICLE-M", "CL_LINE52_BLACK_M", "M")
+        _write(second_path, "ARTICLE-L", "CL_LINE52_BLACK_L", "L")
+
+        first = ingest_sales(xlsx_path=str(first_path), db_path=test_db)
+        second = ingest_sales(xlsx_path=str(second_path), db_path=test_db)
+
+        assert first["inserted"] == 1
+        assert second["inserted"] == 1
+        assert second["lifecycle_conflicts"] == []
+        with sqlite3.connect(test_db) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM sales_fact_v2 "
+                "WHERE order_id='ORD-SEPARATE-ARTICLE'"
+            ).fetchone()[0] == 2
+
+    def test_reingest_distinct_article_batch_fails_closed_on_changed_identity(
+        self, test_db, tmp_path
+    ):
+        first_path = tmp_path / "first_articles.xlsx"
+        corrected_path = tmp_path / "corrected_articles.xlsx"
+        base = {
+            "OrderID": ["ORD-TWO-ARTICLES", "ORD-TWO-ARTICLES"],
+            "Date": [date.today(), date.today()],
+            "KASPI_OFFER_NAME": ["Shared display name", "Shared display name"],
+            "Kaspi_article": ["ARTICLE-M", "ARTICLE-L"],
+            "SKU_key": ["CL_LINE52_BLACK", "CL_LINE52_BLACK"],
+            "Quantity": [1, 1],
+            "Sell_price_kzt": [15000, 15000],
+            "STORE_NAME": ["Universal", "Universal"],
+            "Return": [0, 0],
+        }
+        pd.DataFrame(
+            {
+                **base,
+                "SKU_ID": ["CL_LINE52_BLACK_M", "CL_LINE52_BLACK_L"],
+                "MY_SIZE": ["M", "L"],
+            }
+        ).to_excel(first_path, sheet_name="SALES_KSP_CRM_1", index=False)
+        pd.DataFrame(
+            {
+                **base,
+                "SKU_ID": ["CL_LINE52_BLACK_M", "CL_LINE52_BLACK_XL"],
+                "MY_SIZE": ["M", "XL"],
+            }
+        ).to_excel(corrected_path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        first = ingest_sales(xlsx_path=str(first_path), db_path=test_db)
+        corrected = ingest_sales(xlsx_path=str(corrected_path), db_path=test_db)
+
+        assert first["inserted"] == 2
+        assert corrected["inserted"] == 0
+        assert len(corrected["lifecycle_conflicts"]) == 1
+        with sqlite3.connect(test_db) as conn:
+            rows = conn.execute(
+                "SELECT sku_id FROM sales_fact_v2 WHERE order_id='ORD-TWO-ARTICLES' ORDER BY sku_id"
+            ).fetchall()
+        assert rows == [
+            ("CL_LINE52_BLACK_L",),
+            ("CL_LINE52_BLACK_M",),
+        ]
+
+    def test_reingest_size_correction_does_not_create_second_sales_fact_v2_line(
+        self, test_db, tmp_path
+    ):
+        def _write(path: Path, sku_id: str, size: str) -> None:
+            pd.DataFrame(
+                {
+                    "OrderID": ["ORD-CORRECTION"],
+                    "Date": [date.today()],
+                    "KASPI_OFFER_NAME": ["Stable public offer"],
+                    "SKU_ID": [sku_id],
+                    "SKU_key": ["CL_LINE52_BLACK"],
+                    "MY_SIZE": [size],
+                    "Quantity": [1],
+                    "Sell_price_kzt": [15000],
+                    "STORE_NAME": ["Universal"],
+                    "Return": [0],
+                }
+            ).to_excel(path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        first_path = tmp_path / "first.xlsx"
+        corrected_path = tmp_path / "corrected.xlsx"
+        _write(first_path, "CL_LINE52_BLACK_M", "M")
+        _write(corrected_path, "CL_LINE52_BLACK_L", "L")
+
+        first = ingest_sales(xlsx_path=str(first_path), db_path=test_db)
+        corrected = ingest_sales(xlsx_path=str(corrected_path), db_path=test_db)
+
+        assert first["inserted"] == 1
+        assert corrected["inserted"] == 0
+        assert corrected["skipped"] == 1
+        assert len(corrected["lifecycle_conflicts"]) == 1
+        with sqlite3.connect(test_db) as conn:
+            rows = conn.execute(
+                "SELECT sku_id, my_size FROM sales_fact_v2 WHERE order_id='ORD-CORRECTION'"
+            ).fetchall()
+        assert rows == [("CL_LINE52_BLACK_M", "M")]
+
+    def test_fact_sales_reingest_size_correction_fails_closed(
+        self, test_db, tmp_path
+    ):
+        with sqlite3.connect(test_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE dim_sku (
+                    sku_key TEXT PRIMARY KEY,
+                    base_cost_cny REAL,
+                    weight_kg REAL,
+                    product_type TEXT,
+                    cogs_kzt REAL
+                );
+                INSERT INTO dim_sku VALUES ('CL_LINE52_BLACK', 47, 0.95, 'CL', NULL);
+                CREATE TABLE fact_sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id TEXT NOT NULL,
+                    kaspi_offer_name TEXT,
+                    store_code TEXT NOT NULL,
+                    order_date TEXT NOT NULL,
+                    sku_key TEXT NOT NULL,
+                    sku_id TEXT NOT NULL,
+                    my_size TEXT,
+                    quantity INTEGER NOT NULL,
+                    sell_price_kzt REAL NOT NULL,
+                    product_type TEXT NOT NULL,
+                    channel TEXT,
+                    delivery_fee REAL NOT NULL,
+                    net_rev_unit REAL NOT NULL,
+                    line_net_rev REAL NOT NULL,
+                    cogs_unit REAL NOT NULL,
+                    cogs_line REAL NOT NULL,
+                    profit_unit REAL NOT NULL,
+                    profit_line REAL NOT NULL,
+                    channel_code TEXT,
+                    kaspi_article TEXT,
+                    line_identity_key TEXT
+                );
+                CREATE UNIQUE INDEX ux_fact_sales_order_store_article
+                ON fact_sales (
+                    order_id,
+                    UPPER(TRIM(store_code)),
+                    UPPER(TRIM(kaspi_article))
+                )
+                WHERE TRIM(COALESCE(kaspi_article, '')) <> '';
+                """
+            )
+
+        def _write(path: Path, sku_id: str, size: str) -> None:
+            pd.DataFrame(
+                {
+                    "OrderID": ["ORD-FACT-CORRECTION"],
+                    "Date": [date.today()],
+                    "KASPI_OFFER_NAME": ["Stable fact offer"],
+                    "Kaspi_article": ["ARTICLE-FACT-CORRECTION"],
+                    "SKU_ID": [sku_id],
+                    "SKU_key": ["CL_LINE52_BLACK"],
+                    "MY_SIZE": [size],
+                    "Quantity": [1],
+                    "Sell_price_kzt": [15000],
+                    "STORE_NAME": ["Universal"],
+                    "Return": [0],
+                }
+            ).to_excel(path, sheet_name="SALES_KSP_CRM_1", index=False)
+
+        first_path = tmp_path / "fact_first.xlsx"
+        corrected_path = tmp_path / "fact_corrected.xlsx"
+        _write(first_path, "CL_LINE52_BLACK_M", "M")
+        _write(corrected_path, "CL_LINE52_BLACK_L", "L")
+
+        first = ingest_sales_to_fact_sales(
+            xlsx_path=str(first_path), db_path=test_db
+        )
+        corrected = ingest_sales_to_fact_sales(
+            xlsx_path=str(corrected_path), db_path=test_db
+        )
+
+        assert first["inserted"] == 1
+        assert corrected["inserted"] == 0
+        assert corrected["skipped"] == 1
+        assert len(corrected["lifecycle_conflicts"]) == 1
+        with sqlite3.connect(test_db) as conn:
+            rows = conn.execute(
+                "SELECT sku_id, my_size, kaspi_article, line_identity_key "
+                "FROM fact_sales WHERE order_id='ORD-FACT-CORRECTION'"
+            ).fetchall()
+        assert rows == [
+            (
+                "CL_LINE52_BLACK_M",
+                "M",
+                "ARTICLE-FACT-CORRECTION",
+                "ARTICLE:ARTICLE-FACT-CORRECTION",
+            )
+        ]
 
     def test_ingest_creates_sale_events(self, test_db, sample_sales_excel):
         """Test that ingestion creates SALE events in stock_ledger."""
@@ -583,6 +862,69 @@ class TestIngestSales:
         count = conn.execute("SELECT COUNT(*) FROM sales_fact_v2").fetchone()[0]
         conn.close()
         assert count == 4
+
+    def test_ingest_does_not_replay_ledger_when_source_rows_are_rebuilt(
+        self,
+        test_db,
+        sample_sales_excel,
+    ):
+        """Rebuilding sales_fact_v2 must not duplicate established stock events."""
+        first = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
+        assert first["ledger_events"] == 4
+
+        conn = sqlite3.connect(str(test_db))
+        conn.execute("DELETE FROM sales_fact_v2")
+        conn.commit()
+        ledger_before = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(qty_change), 0) FROM stock_ledger"
+        ).fetchone()
+        conn.close()
+
+        replay = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
+
+        conn = sqlite3.connect(str(test_db))
+        ledger_after = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(qty_change), 0) FROM stock_ledger"
+        ).fetchone()
+        conn.close()
+        assert replay["inserted"] == 4
+        assert replay["ledger_events"] == 0
+        assert ledger_after == ledger_before
+
+    def test_ingest_suppresses_stock_for_active_quarantine_pair(
+        self,
+        test_db,
+        sample_sales_excel,
+    ):
+        conn = sqlite3.connect(str(test_db))
+        conn.execute(
+            """
+            CREATE TABLE fact_order_entry_header_only_source_gap_quarantine (
+                store_code TEXT,
+                order_id TEXT,
+                publication_exclusion_required INTEGER,
+                product_stock_excluded INTEGER,
+                active_flag INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO fact_order_entry_header_only_source_gap_quarantine "
+            "VALUES ('UNIVERSAL','ORD-001',1,1,1)"
+        )
+        conn.commit()
+        conn.close()
+
+        result = ingest_sales(xlsx_path=sample_sales_excel, db_path=test_db)
+
+        conn = sqlite3.connect(str(test_db))
+        quarantined_rows = conn.execute(
+            "SELECT COUNT(*) FROM stock_ledger WHERE reference_id='ORD-001'"
+        ).fetchone()[0]
+        conn.close()
+        assert result["ledger_quarantined"] == 1
+        assert result["ledger_events"] == 3
+        assert quarantined_rows == 0
 
 
 class TestUpdateReturnsFromApi:
