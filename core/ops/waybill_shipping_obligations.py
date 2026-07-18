@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any, Iterable, Mapping
 
 from core.alerts.ops_alert_outbox import enqueue_alert
 from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_order_stage
+from core.ops.expected_shipping_status import ExpectedShippingFacts, obligations
 
 
 SCHEMA_VERSION = 1
@@ -43,6 +45,11 @@ DISCHARGE_STAGES = {
     StageCode.CANCELLED,
     StageCode.RETURNED,
 }
+EXPECTED_STATUS_SHADOW_ROOT = (
+    Path(__file__).resolve().parents[2] / "exports" / "expected_status_shadow"
+)
+EXPECTED_STATUS_SHADOW_ENV = "AB_EXPECTED_STATUS_SHADOW"
+EXPECTED_STATUS_SHADOW_WINDOW_DAYS = 7
 
 
 def _clean(value: Any) -> str:
@@ -203,16 +210,7 @@ def save_shipping_obligation_ledger(path: Path, payload: Mapping[str, Any]) -> P
 def _normalized_order_ids_by_store(
     values: Mapping[str, Iterable[Any]] | None,
 ) -> dict[str, set[str]]:
-    normalized: dict[str, set[str]] = defaultdict(set)
-    for raw_store, raw_ids in dict(values or {}).items():
-        store = normalize_store_code(raw_store)
-        if not store:
-            continue
-        for raw_id in raw_ids or []:
-            order_id = _clean(raw_id)
-            if order_id:
-                normalized[store].add(order_id)
-    return {store: set(order_ids) for store, order_ids in sorted(normalized.items())}
+    return obligations.normalize_active_order_ids_by_store(values)
 
 
 def active_obligation_ids_by_store(ledger: Mapping[str, Any]) -> dict[str, set[str]]:
@@ -268,6 +266,134 @@ def _detail_stage_inputs(order: Mapping[str, Any]) -> tuple[str, str, bool]:
     return state, status, returned_to_warehouse
 
 
+def _expected_status_shadow_enabled() -> bool:
+    return str(os.environ.get(EXPECTED_STATUS_SHADOW_ENV) or "").strip() == "1"
+
+
+def _legacy_obligation_projection(order: Mapping[str, Any]) -> dict[str, str]:
+    """Preserved pre-migration stage computation for the seven-day shadow only."""
+
+    source_state, source_status, returned_to_warehouse = _detail_stage_inputs(order)
+    if returned_to_warehouse:
+        stage = StageCode.RETURNED
+    elif source_status in {"RETURN_REQUESTED", "KASPI_DELIVERY_RETURN_REQUESTED"}:
+        stage = StageCode.RETURN_REQUESTED
+    elif source_state == "ARCHIVE" and source_status not in {
+        "COMPLETED",
+        "CANCELLED",
+        "RETURNED",
+        "CANCELLING",
+        "RETURN_REQUESTED",
+        "KASPI_DELIVERY_RETURN_REQUESTED",
+    }:
+        stage = StageCode.UNKNOWN
+    else:
+        stage = classify_kaspi_order_stage(order)
+    ledger_status = STATUS_UNRESOLVED
+    discharge_reason = ""
+    suspension_reason = ""
+    issue_code = ""
+    if stage in TRANSITIONAL_NO_PACK_STAGES:
+        ledger_status = STATUS_SUSPENDED
+        suspension_reason = stage.value
+    elif stage in DISCHARGE_STAGES:
+        ledger_status = STATUS_DISCHARGED
+        discharge_reason = stage.value
+    elif stage not in PACKABLE_STAGES:
+        issue_code = "obligation_api_stage_uncertain"
+    return {
+        "ledger_status": ledger_status,
+        "last_stage": stage.value,
+        "discharge_reason": discharge_reason,
+        "suspension_reason": suspension_reason,
+        "issue_code": issue_code,
+    }
+
+
+def _obligation_policy_decision(
+    order: Mapping[str, Any],
+    *,
+    store: str,
+    order_id: str,
+    target_date: date,
+):
+    attrs = order.get("attributes") if isinstance(order.get("attributes"), Mapping) else order
+    delivery = attrs.get("kaspiDelivery") if isinstance(attrs.get("kaspiDelivery"), Mapping) else {}
+    line = {
+        "store_code": store,
+        "order_id": order_id,
+        "state": attrs.get("state"),
+        "status": attrs.get("status"),
+        "returned_to_warehouse": (
+            attrs.get("returnedToWarehouse") or attrs.get("returned_to_warehouse")
+        ),
+        "signature_required": attrs.get("signatureRequired"),
+        "pre_order": attrs.get("preOrder"),
+        "delivery_mode": attrs.get("deliveryMode"),
+        "waybill_url": (
+            delivery.get("waybill")
+            or delivery.get("waybillNumber")
+            or attrs.get("waybill")
+        ),
+        "courier_transmission_date": (
+            delivery.get("courierTransmissionDate")
+            or attrs.get("courierTransmissionDate")
+            or attrs.get("actualShipmentDate")
+        ),
+    }
+    facts = ExpectedShippingFacts.from_mapping(line, target_date=target_date)
+    return obligations.evaluate(facts)
+
+
+def _emit_expected_status_shadow_divergence(
+    *,
+    target_date: date,
+    now: datetime,
+    ready_set_at: str,
+    divergences: list[dict[str, Any]],
+) -> Path:
+    report = {
+        "schema_version": 1,
+        "site": "obligations",
+        "policy": obligations.name,
+        "shadow_window_days": EXPECTED_STATUS_SHADOW_WINDOW_DAYS,
+        "generated_at": now.isoformat(),
+        "target_date": target_date.isoformat(),
+        "ready_set_at": _clean(ready_set_at),
+        "divergence_count": len(divergences),
+        "divergences": divergences,
+    }
+    EXPECTED_STATUS_SHADOW_ROOT.mkdir(parents=True, exist_ok=True)
+    output_path = EXPECTED_STATUS_SHADOW_ROOT / (
+        f"{target_date.isoformat()}_obligations_"
+        f"{now.strftime('%Y%m%dT%H%M%S%f%z')}.json"
+    )
+    temp_path = output_path.with_name(f".{output_path.name}.tmp")
+    temp_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(output_path)
+    digest = hashlib.sha256(
+        json.dumps(divergences, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    enqueue_alert(
+        title="Expected shipping status shadow divergence",
+        lines=[
+            "Site: obligations",
+            f"Target date: {target_date.isoformat()}",
+            f"Divergences: {len(divergences)}",
+            f"Report: {output_path}",
+        ],
+        severity="WARN",
+        dedup_key=(
+            "expected_shipping_status_shadow:obligations:"
+            f"{target_date.isoformat()}:{digest}"
+        ),
+    )
+    return output_path
+
+
 def reconcile_shipping_obligations(
     *,
     prior_ledger: Mapping[str, Any],
@@ -307,6 +433,8 @@ def reconcile_shipping_obligations(
     blocking_issues: list[dict[str, str]] = []
     uncertainty_scope_counts = {"covered": 0, "uncovered": 0}
     covered_uncertain_obligations: list[dict[str, str]] = []
+    shadow_enabled = _expected_status_shadow_enabled()
+    shadow_divergences: list[dict[str, Any]] = []
 
     def record_uncertainty(
         *,
@@ -408,25 +536,25 @@ def reconcile_shipping_obligations(
             blocking_issues.append(issue)
             continue
 
-        source_state, source_status, returned_to_warehouse = _detail_stage_inputs(order)
-        if returned_to_warehouse:
-            stage = StageCode.RETURNED
-        elif source_status in {"RETURN_REQUESTED", "KASPI_DELIVERY_RETURN_REQUESTED"}:
-            stage = StageCode.RETURN_REQUESTED
-        elif source_state == "ARCHIVE" and source_status not in {
-            "COMPLETED",
-            "CANCELLED",
-            "RETURNED",
-            "CANCELLING",
-            "RETURN_REQUESTED",
-            "KASPI_DELIVERY_RETURN_REQUESTED",
-        }:
-            # ARCHIVE is a container state, not proof that the employee no longer
-            # needs to pack this exact order.  Keep the obligation and block until
-            # exact status or physical-handover truth resolves the ambiguity.
-            stage = StageCode.UNKNOWN
-        else:
-            stage = classify_kaspi_order_stage(order)
+        source_state, _source_status, _returned_to_warehouse = _detail_stage_inputs(order)
+        policy_decision = _obligation_policy_decision(
+            order,
+            store=store,
+            order_id=order_id,
+            target_date=target_date,
+        )
+        if shadow_enabled:
+            legacy_projection = _legacy_obligation_projection(order)
+            if legacy_projection != policy_decision.projection:
+                shadow_divergences.append(
+                    {
+                        "key": canonical_key,
+                        "legacy_inline": legacy_projection,
+                        "policy_output": policy_decision.projection,
+                        "policy_reason_codes": list(policy_decision.reason_codes),
+                    }
+                )
+        stage = policy_decision.stage
         entry.update(
             {
                 "store_code": store,
@@ -517,6 +645,13 @@ def reconcile_shipping_obligations(
             "entries": dict(sorted(entries.items())),
         }
     )
+    if shadow_divergences:
+        _emit_expected_status_shadow_divergence(
+            target_date=target_date,
+            now=now,
+            ready_set_at=ready_set_at,
+            divergences=shadow_divergences,
+        )
     if enqueue_uncertainty_warnings and covered_uncertain_obligations:
         enqueue_alert(
             title="Shipping obligation uncertainty in prepacked exclusion scope",

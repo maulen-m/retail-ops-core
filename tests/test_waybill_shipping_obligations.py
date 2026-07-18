@@ -123,6 +123,52 @@ def test_reconcile_keeps_prior_active_obligation_without_expiry() -> None:
     assert entry["last_seen_target_date"] == "2026-11-30"
 
 
+def test_obligation_shadow_divergence_writes_report_and_warns(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    shadow_root = tmp_path / "expected_status_shadow"
+    monkeypatch.setenv("AB_EXPECTED_STATUS_SHADOW", "1")
+    monkeypatch.setattr(
+        obligation_mod,
+        "EXPECTED_STATUS_SHADOW_ROOT",
+        shadow_root,
+    )
+    monkeypatch.setattr(
+        obligation_mod,
+        "_legacy_obligation_projection",
+        lambda _order: {"forced": "legacy-divergence"},
+    )
+    monkeypatch.setattr(
+        obligation_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or True,
+    )
+
+    result = reconcile_shipping_obligations(
+        prior_ledger=_prior_ledger(),
+        current_active_order_ids_by_store={},
+        detail_results={"UNIVERSAL:992447685": {"order": _order("992447685")}},
+        target_date=date(2026, 7, 18),
+        ready_set_at="2026-07-18T17:00:00+05:00",
+        now=datetime(2026, 7, 18, 17, 0, 1, tzinfo=ALMATY),
+    )
+
+    assert result["ok"] is True
+    assert result["ledger"]["entries"]["UNIVERSAL:992447685"]["status"] == (
+        "unresolved"
+    )
+    shadow_files = list(shadow_root.glob("*.json"))
+    assert len(shadow_files) == 1
+    shadow_report = json.loads(shadow_files[0].read_text(encoding="utf-8"))
+    assert shadow_report["site"] == "obligations"
+    assert shadow_report["shadow_window_days"] == 7
+    assert shadow_report["divergence_count"] == 1
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "WARN"
+
+
 def test_reconcile_discharges_only_source_backed_handover_or_terminal_truth() -> None:
     handed_over = reconcile_shipping_obligations(
         prior_ledger=_prior_ledger(),
