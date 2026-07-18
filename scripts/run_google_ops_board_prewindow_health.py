@@ -34,6 +34,7 @@ from core.integrations.google_ops_board import (  # noqa: E402
     resolve_spreadsheet_id,
     validate_contract_layout,
 )
+from core.ops.expected_shipping_status import prewindow  # noqa: E402
 from core.integrations.kaspi_api_client import KaspiAPIClient, KaspiAuthError, STORE_TOKEN_MAP  # noqa: E402
 from core.integrations.telegram_bot import get_waybill_telegram_config  # noqa: E402
 from core.ops.google_ops_board_attribution import audit_salesraw_name_core_attribution  # noqa: E402
@@ -281,6 +282,7 @@ def _build_live_board_parity_report(
 
     from scripts.sync_google_ops_board import (
         DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
+        _expected_shipping_policy_override,
         annotate_unsafe_attribution_for_visibility,
         build_phase1_payload,
         build_publish_plan,
@@ -315,13 +317,14 @@ def _build_live_board_parity_report(
     active_contract = contract_for_ownership_mode(
         contract, ownership_layout["ownership_mode"]
     )
-    payload = build_phase1_payload(
-        db_path=db_path,
-        contract=active_contract,
-        target_date=target_date,
-        lookback_days=5,
-        obligation_ledger_path=DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
-    )
+    with _expected_shipping_policy_override(prewindow):
+        payload = build_phase1_payload(
+            db_path=db_path,
+            contract=active_contract,
+            target_date=target_date,
+            lookback_days=5,
+            obligation_ledger_path=DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
+        )
     attribution_report = audit_salesraw_name_core_attribution(
         rows=list(payload.get("SalesRaw_Today") or []),
         db_path=db_path,
