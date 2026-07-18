@@ -54,6 +54,13 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 - Trigger: order reaches **COMPLETED** (delivered).
 - Event: `CASH_IN` to the store’s **Kaspi Pay** cash account.
 - **No receivables model for Kaspi Pay** in D1 mode.
+- Order-line economics must use an exact unique active
+  `dim_kaspi_article_map` identity when the operational order row's
+  `kaspi_article` resolves there. That canonical identity supersedes a raw
+  alias-shaped `sku_key` for cost lookup. When the exact mapping intentionally
+  has no `sku_id`, retain the operational row's exact article identity as the
+  line ID; an ambiguous article mapping remains unresolved and must not be
+  guessed.
 
 ### B) Commission + delivery fees
 - Commission is refunded on returns.
@@ -64,6 +71,31 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 - Event: **reverse cash-in**.
 - Delivery fee **remains a cost** (not refunded).
 
+Returns-economics validation is order-scoped, not a monthly event-presence
+proxy:
+
+- A mature returned order that has recognized positive D1 `CASH_IN` must have
+  a negative ordinary `CASH_IN` or explicit `REFUND` linked to that same order
+  or its exact current entry IDs. An unrelated refund in the same month is not
+  evidence for the order.
+- A returned order with no recognized positive cash has no cash-in to reverse.
+  It must remain excluded from delivered sales truth, but absence of a refund
+  event is not itself a ledger gap. The audit reports it separately as
+  `NO_RECOGNIZED_CASH_TO_REVERSE` rather than inventing a negative cash row.
+- A negative `CASH_IN` created under the exact `ORDER_CASH_REPAIR`
+  supersession contract is a correction, not a customer refund, and cannot
+  satisfy the return-reversal requirement.
+- When the current first-party order row is `RETURNED` but append-only status
+  history has not yet captured the terminal observation, the translator may
+  reverse an earlier positive `ORDER_ENTRY` cash row only through its exact
+  current entry-to-order/store link. The reversal uses the current return
+  observation date and the exact positive cash amount/reference; it must not
+  require the earlier delivery cash to share the return date or recompute the
+  amount from a possibly incomplete product row. Ambiguous entry scope or
+  multiple exact positive rows fails closed.
+- Monthly return/refund counts remain diagnostics only. The strict gate is the
+  exact returned-order/store reference join plus stale-sales exclusion.
+
 ### D) Cash payout
 - In D1 mode, **cash is recognized at delivery**; no payout lag model is used for Kaspi Pay.
 - Statements are used for **anchor + reconciliation**, not daily payouts.
@@ -72,6 +104,15 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 - Orders with internal status **SHIPPED** (Kaspi: “Передан курьеру”) are treated as **ON_DELIVERY**.
 - ON_DELIVERY is **inventory-at-cost**, tracked in `INVENTORY_ON_DELIVERY_COST`.
 - No cash is recognized for ON_DELIVERY in base cashflow.
+- Historical `INVENTORY_SETTLEMENT` events are surrogate terminal closures, not
+  canonical COGS. If canonical completed-order cash and COGS arrive after such a
+  settlement has already reduced the exact order/SKU on-delivery balance to
+  zero, the translator must append an equal-and-opposite
+  `INVENTORY_SETTLEMENT_REVERSAL` linked to that one exact settlement before it
+  appends canonical `COGS_RECOGNIZED`. The prior settlement must be unique for
+  the exact order/SKU, have a valid event hash, and equal the canonical line
+  cost; otherwise translation fails closed. A canonical replay must leave the
+  order/SKU on-delivery balance at zero and a second replay must emit no event.
 
 ---
 
@@ -124,6 +165,48 @@ We track **events** and derive daily cashflow calendars. Suggested mapping:
 4) **Recon if statements exist**
    - If Kaspi Pay statements are available, treat them as reconciliation
      (not required for daily operations).
+
+5) **Monthly D1 sales-to-cash reconciliation**
+   - Cohort on the sale order from `view_sales_line_truth`, not on the cash
+     event's delivery/reversal month.
+   - Use positive and negative `CASH_IN` rows for the order. Do not mix the
+     obsolete `SALE_ACCRUED + REFUND` convention into current D1 parity.
+   - The delivery cost input is the seller fee from
+     `fact_orders_kaspi.delivery_cost_for_seller`, allocated exactly once
+     across the order's entry lines in proportion to their gross amounts.
+     `order_entries.deliveryCost` is buyer-facing evidence and must never be
+     substituted for the seller fee. A genuinely missing seller fee remains
+     missing and uses the canonical modelled delivery matrix; it must not be
+     coerced to zero. When an order header amount covers multiple units, divide
+     it by quantity before applying unit economics, then multiply the canonical
+     unit net amount by quantity for the line total.
+   - Prefer cash linked by `ORDER_ENTRY` through
+     `fact_order_entries_kaspi.entry_id -> order_id` only after exact entry-set,
+     store, and quantity parity with the sales order. Partial or duplicate entry
+     evidence is a stopline. Use `ORDER` cash only when no `ORDER_ENTRY` cash
+     exists for that order, and never add both reference types together.
+   - Require exact order/store identity and complete per-order coverage before
+     treating a closed month/store pair as decision-grade. The detailed contract
+     is `docs/validation/SALES_ECONOMICS_TRUTH_CONTRACT.md`.
+   - A source-proven mapped order whose historical cash-account events are
+     superseded must be repaired append-only. Each stale `CASH_IN` or
+     cash-account payout row remains immutable and receives exactly one
+     equal-and-opposite row on the same date, event type, account, store, SKU
+     identity, and `ORDER` reference. The reversal must use source
+     `ORDER_CASH_REPAIR`, a nonblank fixed repair run ID, a valid event hash,
+     and notes that bind the numeric `supersedes_cash_id`, the superseded
+     64-hex event hash, the exact order ID, and a versioned repair key. A
+     complete repair manifest must pin every full preimage and every
+     replacement `ORDER_ENTRY` row; partial sets, extra rows, hash drift, or an
+     unequal pair are fail-closed.
+   - A validated negative `CASH_IN` row with that exact `ORDER_CASH_REPAIR`
+     supersession contract is a ledger correction, not a customer refund. It
+     still affects the cash-account roll-forward and must net with its
+     superseded positive row, but `rebuild_cashflow_calendar.py` excludes it
+     from `refunds_kzt`. Ordinary negative `CASH_IN` and explicit `REFUND` rows
+     remain refunds. This classification does not authorize cash mutation;
+     copied and production application retain their separate write gates and
+     approvals.
 
 ---
 

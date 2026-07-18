@@ -11,6 +11,7 @@ import argparse
 import os
 import hashlib
 import re
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -85,6 +86,14 @@ ANCHOR_TIMESTAMP_RE = re.compile(
     r"(?P<day>\d{2})\.(?P<month>\d{2})\.(?P<year>\d{4})_"
     r"(?P<hour>\d{2})_(?P<minute>\d{2})_(?P<second>\d{2})"
 )
+ORDER_CASH_REPAIR_NOTE_RE = re.compile(
+    r"(?:^|;\s*)exact mapped-order cash reversal;\s*"
+    r"order_id=(?P<order_id>[^;\s]+);\s*"
+    r"supersedes_cash_id=(?P<cash_id>\d+);\s*"
+    r"supersedes_cash_hash=(?P<cash_hash>[0-9a-f]{64});\s*"
+    r"repair_key=(?P<repair_key>[A-Z0-9_]+)(?:;|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -127,6 +136,69 @@ def _fail_on_sqlite_sidecars(db_path: Path) -> None:
         raise RuntimeError(f"refusing production cashflow rebuild while SQLite sidecars exist: {joined}")
 
 
+def _write_exact_rollback_preimage(db_path: Path, backup_dir: Path) -> Path:
+    """Persist a byte-exact rollback source next to the logical SQLite backup."""
+
+    _fail_on_sqlite_sidecars(db_path)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    target = backup_dir / f"rollback_preimage_{db_path.stem}_{stamp}_{os.getpid()}.db"
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    with db_path.open("rb") as source, temporary.open("xb") as destination:
+        shutil.copyfileobj(source, destination, length=1024 * 1024)
+        destination.flush()
+        os.fsync(destination.fileno())
+    os.replace(temporary, target)
+    if _sha256_file(target) != _sha256_file(db_path):
+        target.unlink(missing_ok=True)
+        raise RuntimeError("cashflow rollback preimage is not byte-identical to the source DB")
+    return target
+
+
+def _restore_exact_rollback_preimage(
+    db_path: Path,
+    metadata: dict[str, object],
+) -> None:
+    """Atomically restore and verify the exact pre-apply SQLite bytes."""
+
+    metadata["restore_attempted"] = True
+    metadata["restore_verified"] = False
+    rollback_path_text = str(metadata.get("rollback_preimage_path") or "").strip()
+    expected_pre_sha256 = str(metadata.get("pre_sha256") or "").strip()
+    if not rollback_path_text or not expected_pre_sha256:
+        raise RuntimeError("cashflow rollback metadata is incomplete")
+    rollback_path = Path(rollback_path_text)
+    if not rollback_path.exists():
+        raise RuntimeError(f"cashflow rollback preimage is missing: {rollback_path}")
+    rollback_sha256 = _sha256_file(rollback_path)
+    if rollback_sha256 != expected_pre_sha256:
+        raise RuntimeError(
+            "cashflow rollback preimage SHA mismatch: "
+            f"expected {expected_pre_sha256}, observed {rollback_sha256}"
+        )
+
+    for sidecar in _sidecar_paths(db_path):
+        sidecar.unlink(missing_ok=True)
+    temporary = db_path.with_name(f".{db_path.name}.restore.{os.getpid()}.tmp")
+    temporary.unlink(missing_ok=True)
+    with rollback_path.open("rb") as source, temporary.open("xb") as destination:
+        shutil.copyfileobj(source, destination, length=1024 * 1024)
+        destination.flush()
+        os.fsync(destination.fileno())
+    os.replace(temporary, db_path)
+
+    restored_sha256 = _sha256_file(db_path)
+    restored_integrity = _sqlite_integrity_check(db_path)
+    metadata["restored_sha256"] = restored_sha256
+    metadata["restored_integrity_check"] = restored_integrity
+    if restored_sha256 != expected_pre_sha256 or restored_integrity.lower() != "ok":
+        raise RuntimeError(
+            "cashflow rollback verification failed: "
+            f"sha={restored_sha256} integrity={restored_integrity}"
+        )
+    metadata["restore_verified"] = True
+
+
 def _is_production_db(db_path: Path) -> bool:
     return db_path.resolve() == DEFAULT_DB.resolve()
 
@@ -145,7 +217,39 @@ def _prepare_cashflow_rebuild_apply_guard(
         "production_apply": production_apply,
         "pre_sha256": _sha256_file(db_path),
     }
+    pre_sha256 = str(metadata["pre_sha256"])
+    if expected_pre_sha256 and pre_sha256 != expected_pre_sha256:
+        raise RuntimeError(
+            "DB SHA mismatch before cashflow rebuild: "
+            f"expected {expected_pre_sha256}, observed {pre_sha256}"
+        )
     if not production_apply:
+        if expected_pre_sha256:
+            metadata["expected_pre_sha256"] = expected_pre_sha256
+        if backup_dir is not None:
+            _fail_on_sqlite_sidecars(db_path)
+            pre_integrity = _sqlite_integrity_check(db_path)
+            if pre_integrity.lower() != "ok":
+                raise RuntimeError(
+                    f"copied DB integrity_check failed before cashflow rebuild: {pre_integrity}"
+                )
+            backup_path = backup_database(db_path, backup_dir, compress=False)
+            rollback_preimage_path = _write_exact_rollback_preimage(db_path, backup_dir)
+            backup_integrity = _sqlite_integrity_check(backup_path)
+            if backup_integrity.lower() != "ok":
+                raise RuntimeError(
+                    f"cashflow copied rebuild backup integrity_check failed: {backup_integrity}"
+                )
+            metadata.update(
+                {
+                    "backup_path": str(backup_path),
+                    "backup_sha256": _sha256_file(backup_path),
+                    "rollback_preimage_path": str(rollback_preimage_path),
+                    "rollback_preimage_sha256": _sha256_file(rollback_preimage_path),
+                    "pre_integrity_check": pre_integrity,
+                    "backup_integrity_check": backup_integrity,
+                }
+            )
         return metadata
 
     if os.environ.get(PROD_WRITE_ENV_GATE) != "1":
@@ -159,14 +263,8 @@ def _prepare_cashflow_rebuild_apply_guard(
     pre_integrity = _sqlite_integrity_check(db_path)
     if pre_integrity.lower() != "ok":
         raise RuntimeError(f"production DB integrity_check failed before cashflow rebuild: {pre_integrity}")
-    pre_sha256 = str(metadata["pre_sha256"])
-    if pre_sha256 != expected_pre_sha256:
-        raise RuntimeError(
-            "production DB SHA mismatch before cashflow rebuild: "
-            f"expected {expected_pre_sha256}, observed {pre_sha256}"
-        )
-
     backup_path = backup_database(db_path, backup_dir, compress=False)
+    rollback_preimage_path = _write_exact_rollback_preimage(db_path, backup_dir)
     backup_integrity = _sqlite_integrity_check(backup_path)
     if backup_integrity.lower() != "ok":
         raise RuntimeError(f"cashflow rebuild backup integrity_check failed: {backup_integrity}")
@@ -175,6 +273,8 @@ def _prepare_cashflow_rebuild_apply_guard(
             "expected_pre_sha256": expected_pre_sha256,
             "backup_path": str(backup_path),
             "backup_sha256": _sha256_file(backup_path),
+            "rollback_preimage_path": str(rollback_preimage_path),
+            "rollback_preimage_sha256": _sha256_file(rollback_preimage_path),
             "pre_integrity_check": pre_integrity,
             "backup_integrity_check": backup_integrity,
         }
@@ -351,6 +451,30 @@ def _is_modelled_cash_in(event: dict) -> bool:
         str(event.get("event_type") or "").upper() == "CASH_IN"
         and float(event.get("amount_kzt") or 0.0) > 0
         and "MODEL" in str(event.get("source") or "").upper()
+    )
+
+
+def _is_order_cash_repair_reversal(event: dict) -> bool:
+    """Return true only for the strict append-only cash supersession shape."""
+
+    if str(event.get("event_type") or "").upper() != "CASH_IN":
+        return False
+    if float(event.get("amount_kzt") or 0.0) >= 0:
+        return False
+    if str(event.get("source") or "").upper() != "ORDER_CASH_REPAIR":
+        return False
+    if str(event.get("ref_type") or "").upper() != "ORDER":
+        return False
+    ref_id = str(event.get("ref_id") or "").strip()
+    run_id = str(event.get("run_id") or "").strip()
+    event_hash = str(event.get("event_hash") or "").strip().lower()
+    match = ORDER_CASH_REPAIR_NOTE_RE.search(str(event.get("notes") or "").strip())
+    return bool(
+        ref_id
+        and run_id
+        and re.fullmatch(r"[0-9a-f]{64}", event_hash)
+        and match
+        and match.group("order_id") == ref_id
     )
 
 
@@ -845,7 +969,11 @@ def compute_daily_rows(
                 e.get("amount_kzt", 0.0)
                 for e in day_events
                 if e.get("event_type") == "REFUND"
-                or (e.get("event_type") == "CASH_IN" and (e.get("amount_kzt", 0.0) or 0.0) < 0)
+                or (
+                    e.get("event_type") == "CASH_IN"
+                    and (e.get("amount_kzt", 0.0) or 0.0) < 0
+                    and not _is_order_cash_repair_reversal(e)
+                )
             )
         )
         po_payments = abs(sum(e.get("amount_kzt", 0.0) for e in day_events if e.get("event_type") == "PO_PAYMENT"))
@@ -927,6 +1055,115 @@ def _load_opening_state(
     }
 
 
+def _verify_cashflow_rebuild_postcommit(
+    *,
+    db_path: Path,
+    start_date: date,
+    end_date: date,
+    daily_rows: list[dict],
+    system_events: list[dict],
+) -> dict[str, object]:
+    """Read back the exact derived range and generated SYSTEM event set."""
+
+    daily_columns = [
+        "date",
+        "cash_open",
+        "cash_close",
+        "receivables_open",
+        "receivables_close",
+        "inventory_cost_open",
+        "inventory_cost_close",
+        "capital_close",
+        "inventory_on_hand_open",
+        "inventory_on_hand_close",
+        "inventory_inbound_open",
+        "inventory_inbound_close",
+        "inventory_on_delivery_open",
+        "inventory_on_delivery_close",
+        "sales_accrued_kzt",
+        "payouts_received_kzt",
+        "refunds_kzt",
+        "po_payments_kzt",
+        "expenses_kzt",
+        "cogs_kzt",
+        "cash_flow_kzt",
+        "receivables_flow_kzt",
+        "inventory_cost_flow_kzt",
+        "profit_accrual_kzt",
+        "run_id",
+    ]
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        observed_daily = conn.execute(
+            f"""
+            SELECT {', '.join(daily_columns)}
+            FROM fact_cashflow_daily
+            WHERE date BETWEEN ? AND ?
+            ORDER BY date
+            """,
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        expected_by_date = {str(row["date"]): row for row in daily_rows}
+        if len(observed_daily) != len(expected_by_date):
+            raise RuntimeError(
+                "cashflow daily postcommit count mismatch: "
+                f"expected {len(expected_by_date)}, observed {len(observed_daily)}"
+            )
+        for observed in observed_daily:
+            day = str(observed["date"])
+            expected = expected_by_date.get(day)
+            if expected is None:
+                raise RuntimeError(f"cashflow daily postcommit unexpected date: {day}")
+            for column in daily_columns:
+                expected_value = expected.get(column)
+                observed_value = observed[column]
+                if column in {"date", "run_id"}:
+                    matches = str(observed_value or "") == str(expected_value or "")
+                else:
+                    matches = round(float(observed_value or 0.0), 2) == round(
+                        float(expected_value or 0.0), 2
+                    )
+                if not matches:
+                    raise RuntimeError(
+                        "cashflow daily postcommit value mismatch: "
+                        f"date={day} column={column}"
+                    )
+
+        expected_hashes = sorted(
+            str(event.get("event_hash") or _event_hash(event)) for event in system_events
+        )
+        observed_hashes = sorted(
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT event_hash
+                FROM fact_cashflow_events
+                WHERE event_date BETWEEN ? AND ?
+                  AND source = 'SYSTEM'
+                  AND event_type = 'COGS_RECOGNIZED'
+                ORDER BY event_hash
+                """,
+                (start_date.isoformat(), end_date.isoformat()),
+            ).fetchall()
+        )
+        if observed_hashes != expected_hashes:
+            raise RuntimeError(
+                "cashflow SYSTEM event postcommit mismatch: "
+                f"expected {len(expected_hashes)}, observed {len(observed_hashes)}"
+            )
+    finally:
+        conn.close()
+
+    return {
+        "daily_row_count": len(observed_daily),
+        "system_event_count": len(expected_hashes),
+        "range_start": start_date.isoformat(),
+        "range_end": end_date.isoformat(),
+        "exact_readback": True,
+    }
+
+
 def rebuild_cashflow_calendar(
     db_path: Path,
     start_date: date,
@@ -948,11 +1185,16 @@ def rebuild_cashflow_calendar(
             expected_pre_sha256=expected_pre_sha256,
             backup_dir=backup_dir,
         )
+        rebuild_cashflow_calendar.last_apply_metadata = dict(apply_metadata)
 
     fx_rates = get_fx_rates(end_date, db_path=db_path)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    caught_exception: Exception | None = None
     try:
+        if apply:
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
         if not _table_exists(conn, "fact_cashflow_events"):
             raise RuntimeError("fact_cashflow_events missing; run migrate_018_cashflow_calendar.py")
         if not _table_exists(conn, "fact_cashflow_daily"):
@@ -1082,18 +1324,61 @@ def rebuild_cashflow_calendar(
                 )
 
         if apply:
-            conn.commit()
+            conn.execute("COMMIT")
+    except Exception as exc:
+        caught_exception = exc
+        if apply:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
     finally:
         conn.close()
 
-    if apply_metadata:
+    if caught_exception is not None:
+        if apply_metadata.get("rollback_preimage_path"):
+            try:
+                _restore_exact_rollback_preimage(db_path, apply_metadata)
+            except Exception as restore_exc:
+                apply_metadata["restore_error"] = str(restore_exc)
+                rebuild_cashflow_calendar.last_apply_metadata = apply_metadata
+                raise RuntimeError(
+                    "cashflow rebuild failed and exact rollback restoration is ambiguous: "
+                    f"{restore_exc}"
+                ) from caught_exception
         rebuild_cashflow_calendar.last_apply_metadata = apply_metadata
-    if apply_metadata.get("production_apply"):
-        post_integrity = _sqlite_integrity_check(db_path)
-        if post_integrity.lower() != "ok":
-            raise RuntimeError(f"production DB integrity_check failed after cashflow rebuild: {post_integrity}")
-        apply_metadata["post_sha256"] = _sha256_file(db_path)
-        apply_metadata["post_integrity_check"] = post_integrity
+        raise caught_exception
+
+    if apply_metadata:
+        try:
+            post_integrity = _sqlite_integrity_check(db_path)
+            if post_integrity.lower() != "ok":
+                raise RuntimeError(
+                    f"DB integrity_check failed after cashflow rebuild: {post_integrity}"
+                )
+            postcommit_readback = _verify_cashflow_rebuild_postcommit(
+                db_path=db_path,
+                start_date=start_date,
+                end_date=end_date,
+                daily_rows=daily_rows,
+                system_events=system_events,
+            )
+            apply_metadata["post_sha256"] = _sha256_file(db_path)
+            apply_metadata["post_integrity_check"] = post_integrity
+            apply_metadata["postcommit_readback"] = postcommit_readback
+        except Exception as exc:
+            if apply_metadata.get("rollback_preimage_path"):
+                try:
+                    _restore_exact_rollback_preimage(db_path, apply_metadata)
+                except Exception as restore_exc:
+                    apply_metadata["restore_error"] = str(restore_exc)
+                    rebuild_cashflow_calendar.last_apply_metadata = apply_metadata
+                    raise RuntimeError(
+                        "cashflow postcommit verification failed and exact rollback "
+                        f"restoration is ambiguous: {restore_exc}"
+                    ) from exc
+            rebuild_cashflow_calendar.last_apply_metadata = apply_metadata
+            raise
         rebuild_cashflow_calendar.last_apply_metadata = apply_metadata
 
     return daily_rows, system_events

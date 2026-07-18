@@ -42,6 +42,14 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _logical_dump(db_path: Path) -> tuple[str, ...]:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return tuple(conn.iterdump())
+    finally:
+        conn.close()
+
+
 def _daily_columns(db_path: Path) -> set[str]:
     conn = sqlite3.connect(str(db_path))
     try:
@@ -207,7 +215,11 @@ def test_production_rebuild_creates_verified_backup(tmp_path, monkeypatch):
     assert len(backups) == 1
     assert metadata["production_apply"] is True
     assert metadata["backup_path"] == str(backups[0])
+    rollback_preimage = Path(metadata["rollback_preimage_path"])
+    assert rollback_preimage.exists()
+    assert metadata["rollback_preimage_sha256"] == metadata["pre_sha256"]
     assert metadata["post_integrity_check"] == "ok"
+    assert metadata["postcommit_readback"]["exact_readback"] is True
     assert missing_column in _daily_columns(db_path)
     assert len(rows) == 1
     assert system_events == []
@@ -240,3 +252,141 @@ def test_env_gated_apply_can_backfill_existing_auto_migration_column(tmp_path, m
     finally:
         conn.close()
     assert daily_count == 1
+
+
+def test_nonproduction_rebuild_honors_expected_sha(tmp_path, monkeypatch):
+    db_path = tmp_path / "copy.db"
+    missing_column = "inventory_on_delivery_close"
+    _init_cashflow_db_missing_daily_column(db_path, missing_column)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    before_hash = _sha256(db_path)
+
+    with pytest.raises(RuntimeError, match="DB SHA mismatch before cashflow rebuild"):
+        rebuild_cashflow_calendar(
+            db_path=db_path,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            apply=True,
+            run_id="copy-sha-mismatch",
+            expected_pre_sha256="0" * 64,
+            backup_dir=tmp_path / "backups",
+        )
+
+    assert _sha256(db_path) == before_hash
+    assert not (tmp_path / "backups").exists()
+    assert missing_column not in _daily_columns(db_path)
+
+
+def test_nonproduction_rebuild_honors_requested_backup(tmp_path, monkeypatch):
+    db_path = tmp_path / "copy.db"
+    missing_column = "inventory_on_delivery_close"
+    _init_cashflow_db_missing_daily_column(db_path, missing_column)
+    backup_dir = tmp_path / "backups"
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    before_hash = _sha256(db_path)
+    before_dump = _logical_dump(db_path)
+
+    rebuild_cashflow_calendar(
+        db_path=db_path,
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 1),
+        apply=True,
+        run_id="copy-backup",
+        expected_pre_sha256=before_hash,
+        backup_dir=backup_dir,
+    )
+
+    backups = list(backup_dir.glob("app_*.db"))
+    assert len(backups) == 1
+    assert _logical_dump(backups[0]) == before_dump
+    metadata = rebuild_cashflow_calendar.last_apply_metadata
+    assert metadata["production_apply"] is False
+    assert metadata["expected_pre_sha256"] == before_hash
+    assert metadata["backup_sha256"] == _sha256(backups[0])
+    assert metadata["backup_integrity_check"] == "ok"
+
+
+def test_production_postcommit_verification_failure_restores_exact_preimage(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "app.db"
+    missing_column = "inventory_on_delivery_close"
+    _init_cashflow_db_missing_daily_column(db_path, missing_column)
+    backup_dir = tmp_path / "backups"
+    monkeypatch.setattr(cashflow_calendar, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.setenv("ENABLE_CASHFLOW_PROD_WRITE", "1")
+    before_bytes = db_path.read_bytes()
+    before_hash = _sha256(db_path)
+
+    def _injected_postcommit_failure(**_kwargs):
+        raise RuntimeError("injected postcommit verification failure")
+
+    monkeypatch.setattr(
+        cashflow_calendar,
+        "_verify_cashflow_rebuild_postcommit",
+        _injected_postcommit_failure,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="injected postcommit verification failure"):
+        rebuild_cashflow_calendar(
+            db_path=db_path,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            apply=True,
+            run_id="postcommit-failure",
+            expected_pre_sha256=before_hash,
+            backup_dir=backup_dir,
+        )
+
+    assert db_path.read_bytes() == before_bytes
+    assert _sha256(db_path) == before_hash
+    assert missing_column not in _daily_columns(db_path)
+    metadata = rebuild_cashflow_calendar.last_apply_metadata
+    assert metadata["restore_attempted"] is True
+    assert metadata["restore_verified"] is True
+    assert metadata["restored_sha256"] == before_hash
+
+
+def test_production_transaction_failure_after_schema_write_restores_exact_preimage(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "app.db"
+    missing_column = "inventory_on_delivery_close"
+    _init_cashflow_db_missing_daily_column(db_path, missing_column)
+    backup_dir = tmp_path / "backups"
+    monkeypatch.setattr(cashflow_calendar, "DEFAULT_DB", db_path)
+    monkeypatch.setenv("ENABLE_CASHFLOW_WRITE", "1")
+    monkeypatch.setenv("ENABLE_CASHFLOW_PROD_WRITE", "1")
+    before_bytes = db_path.read_bytes()
+    before_hash = _sha256(db_path)
+
+    def _injected_transaction_failure(*_args, **_kwargs):
+        raise RuntimeError("injected after-schema transaction failure")
+
+    monkeypatch.setattr(
+        cashflow_calendar,
+        "compute_daily_rows",
+        _injected_transaction_failure,
+    )
+
+    with pytest.raises(RuntimeError, match="injected after-schema transaction failure"):
+        rebuild_cashflow_calendar(
+            db_path=db_path,
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            apply=True,
+            run_id="transaction-failure",
+            expected_pre_sha256=before_hash,
+            backup_dir=backup_dir,
+        )
+
+    assert db_path.read_bytes() == before_bytes
+    assert _sha256(db_path) == before_hash
+    assert missing_column not in _daily_columns(db_path)
+    metadata = rebuild_cashflow_calendar.last_apply_metadata
+    assert metadata["restore_attempted"] is True
+    assert metadata["restore_verified"] is True
