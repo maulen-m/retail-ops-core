@@ -1,9 +1,11 @@
 import hashlib
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from core.calc.economics import calc_delivery_fee, calc_net_rev
 import scripts.repair_d1_cash_in_from_validator_evidence as d1_repair
 from scripts.repair_d1_cash_in_from_validator_evidence import (
     D1CashInRepairError,
@@ -15,7 +17,13 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _init_db(db_path: Path, *, entry_id: str = "RECOV-CURRENT_CRM-test") -> None:
+def _init_db(
+    db_path: Path,
+    *,
+    entry_id: str = "RECOV-CURRENT_CRM-test",
+    seller_delivery_fee: float | None = 500.0,
+    buyer_entry_delivery_fee: float | None = 0.0,
+) -> None:
     conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
@@ -55,6 +63,11 @@ def _init_db(db_path: Path, *, entry_id: str = "RECOV-CURRENT_CRM-test") -> None
                 raw_json TEXT,
                 delivery_cost_kzt REAL
             );
+            CREATE TABLE fact_orders_kaspi (
+                order_id TEXT,
+                store_code TEXT,
+                delivery_cost_for_seller REAL
+            );
             CREATE TABLE dim_kaspi_article_map (
                 store_code TEXT,
                 kaspi_article TEXT,
@@ -80,9 +93,16 @@ def _init_db(db_path: Path, *, entry_id: str = "RECOV-CURRENT_CRM-test") -> None
             """
             INSERT INTO fact_order_entries_kaspi (
                 entry_id, order_id, store_code, offer_id, quantity, unit_price_kzt, total_price_kzt, delivery_cost_kzt
-            ) VALUES (?, 'ORDER1', 'UNIVERSAL', 'ART1', 1, 8150, 8150, 0)
+            ) VALUES (?, 'ORDER1', 'UNIVERSAL', 'ART1', 1, 8150, 8150, ?)
             """,
-            (entry_id,),
+            (entry_id, buyer_entry_delivery_fee),
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_orders_kaspi (order_id, store_code, delivery_cost_for_seller)
+            VALUES ('ORDER1', 'UNIVERSAL', ?)
+            """,
+            (seller_delivery_fee,),
         )
         conn.execute(
             """
@@ -121,13 +141,151 @@ def test_repair_inserts_only_recovered_entry_cash_in(tmp_path, monkeypatch):
     try:
         row = conn.execute(
             """
-            SELECT event_type, ref_type, ref_id, source, run_id
+            SELECT event_type, ref_type, ref_id, source, run_id, amount_kzt
             FROM fact_cashflow_events
             """
         ).fetchone()
     finally:
         conn.close()
-    assert row == ("CASH_IN", "ORDER_ENTRY", "RECOV-CURRENT_CRM-test", "ORDER_MODELLED", "test-repair")
+    assert row[:5] == (
+        "CASH_IN",
+        "ORDER_ENTRY",
+        "RECOV-CURRENT_CRM-test",
+        "ORDER_MODELLED",
+        "test-repair",
+    )
+    assert row[5] == round(
+        calc_net_rev(8150, delivery_fee=500, weight_kg=0, as_of_date=date(2026, 5, 6)),
+        2,
+    )
+
+
+def test_repair_accepts_source_stable_workbook_recovery_prefix(tmp_path, monkeypatch):
+    db_path = tmp_path / "cashflow.db"
+    _init_db(db_path, entry_id="RECOV-WORKBOOK-stable")
+    monkeypatch.setenv("ENABLE_D1_CASH_IN_REPAIR_WRITE", "1")
+
+    summary = repair_d1_cash_in_from_validator_evidence(
+        db_path=db_path,
+        as_of="2026-05-06",
+        output_root=tmp_path / "evidence",
+        run_id="stable-workbook-recovery",
+        apply=True,
+        expected_missing_count=1,
+    )
+
+    assert summary["status"] == "PASS"
+    assert summary["allowed_recovered_entry_count"] == 1
+    assert summary["allowed_fact_order_entry_count"] == 0
+
+
+def test_repair_preserves_missing_seller_fee_and_ignores_buyer_entry_delivery(tmp_path, monkeypatch):
+    db_path = tmp_path / "cashflow.db"
+    _init_db(
+        db_path,
+        seller_delivery_fee=None,
+        buyer_entry_delivery_fee=999.0,
+    )
+    monkeypatch.setenv("ENABLE_D1_CASH_IN_REPAIR_WRITE", "1")
+
+    repair_d1_cash_in_from_validator_evidence(
+        db_path=db_path,
+        as_of="2026-05-06",
+        output_root=tmp_path / "evidence",
+        run_id="missing-seller-fee",
+        apply=True,
+        expected_missing_count=1,
+    )
+
+    with sqlite3.connect(str(db_path)) as conn:
+        amount = conn.execute("SELECT amount_kzt FROM fact_cashflow_events").fetchone()[0]
+    model_fee = calc_delivery_fee(8150, weight_kg=0, delivery_type="city")
+    expected = round(
+        calc_net_rev(8150, delivery_fee=model_fee, weight_kg=0, as_of_date=date(2026, 5, 6)),
+        2,
+    )
+    buyer_fee_wrong = round(
+        calc_net_rev(8150, delivery_fee=999, weight_kg=0, as_of_date=date(2026, 5, 6)),
+        2,
+    )
+    assert amount == expected
+    assert amount != buyer_fee_wrong
+
+
+def test_partial_order_repair_allocates_seller_fee_across_all_order_entries(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "cashflow.db"
+    _init_db(
+        db_path,
+        entry_id="RECOV-CURRENT_CRM-first",
+        seller_delivery_fee=1500.0,
+    )
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO fact_order_entries_kaspi (
+                entry_id, order_id, store_code, offer_id, quantity,
+                unit_price_kzt, total_price_kzt, delivery_cost_kzt
+            ) VALUES ('RECOV-CURRENT_CRM-second', 'ORDER1', 'UNIVERSAL',
+                      'ART2', 1, 8150, 8150, 0)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO dim_kaspi_article_map (
+                store_code, kaspi_article, kaspi_offer_name, sku_key, sku_id
+            ) VALUES ('UNIVERSAL', 'ART2', '', 'SKU1', 'SKU1_XL')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fact_cashflow_events (
+                event_date, event_type, account, amount_kzt, store_code,
+                sku_key, sku_id, ref_type, ref_id, source, run_id, event_hash
+            ) VALUES ('2026-05-06', 'CASH_IN', 'KASPI_PAY_UNIVERSAL', 1,
+                      'UNIVERSAL', 'SKU1', 'SKU1_XL', 'ORDER_ENTRY',
+                      'RECOV-CURRENT_CRM-first', 'ORDER_MODELLED', 'existing',
+                      'existing-first')
+            """
+        )
+        conn.commit()
+    monkeypatch.setenv("ENABLE_D1_CASH_IN_REPAIR_WRITE", "1")
+
+    summary = repair_d1_cash_in_from_validator_evidence(
+        db_path=db_path,
+        as_of="2026-05-06",
+        output_root=tmp_path / "evidence",
+        run_id="partial-order-fee-allocation",
+        apply=True,
+        expected_missing_count=1,
+    )
+
+    assert summary["apply"]["inserted_event_rows"] == 1
+    with sqlite3.connect(str(db_path)) as conn:
+        amount = conn.execute(
+            "SELECT amount_kzt FROM fact_cashflow_events WHERE ref_id='RECOV-CURRENT_CRM-second'"
+        ).fetchone()[0]
+    expected = round(
+        calc_net_rev(
+            8150,
+            delivery_fee=750,
+            weight_kg=0,
+            as_of_date=date(2026, 5, 6),
+        ),
+        2,
+    )
+    wrong_full_fee = round(
+        calc_net_rev(
+            8150,
+            delivery_fee=1500,
+            weight_kg=0,
+            as_of_date=date(2026, 5, 6),
+        ),
+        2,
+    )
+    assert amount == expected
+    assert amount != wrong_full_fee
 
 
 def test_repair_refuses_non_recovered_entry_candidate(tmp_path):

@@ -58,9 +58,10 @@ def _is_weak_sku_identity(sku_key: str, sku_id: str) -> bool:
 
 
 def _is_recovered_blank_order_entry(candidate: dict[str, Any]) -> bool:
+    ref_id = str(candidate.get("ref_id") or "")
     return (
         _upper(candidate.get("ref_type")) == "ORDER_ENTRY"
-        and str(candidate.get("ref_id") or "").startswith("RECOV-CURRENT_CRM-")
+        and ref_id.startswith(("RECOV-CURRENT_CRM-", "RECOV-WORKBOOK-"))
         and not str(candidate.get("sku_key") or "").strip()
         and not str(candidate.get("sku_id") or "").strip()
     )

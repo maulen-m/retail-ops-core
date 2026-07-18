@@ -43,8 +43,10 @@ from core.cashflow.order_cashflow_validation import (  # noqa: E402
 )
 from scripts.backup_db import backup_database  # noqa: E402
 from scripts.translate_orders_to_cashflow_events import (  # noqa: E402
+    _allocate_seller_delivery_fee,
     _event_hash,
     _load_dim_sku_weights,
+    _load_order_seller_delivery_fees,
     _net_cash_amount_for_line,
 )
 
@@ -176,9 +178,10 @@ def _missing_cash_candidates(conn: sqlite3.Connection, *, as_of: str) -> list[di
 
 
 def _is_allowed_recovered_entry(candidate: dict[str, Any]) -> bool:
+    ref_id = str(candidate.get("ref_id") or "")
     return (
         str(candidate.get("ref_type") or "").strip().upper() == "ORDER_ENTRY"
-        and str(candidate.get("ref_id") or "").startswith("RECOV-CURRENT_CRM-")
+        and ref_id.startswith(("RECOV-CURRENT_CRM-", "RECOV-WORKBOOK-"))
         and bool(str(candidate.get("order_id") or "").strip())
         and bool(str(candidate.get("store_code") or "").strip())
         and bool(str(candidate.get("delivered_date") or "").strip())
@@ -188,11 +191,12 @@ def _is_allowed_recovered_entry(candidate: dict[str, Any]) -> bool:
 
 
 def _is_allowed_fact_order_entry(candidate: dict[str, Any]) -> bool:
+    ref_id = str(candidate.get("ref_id") or "")
     return (
         str(candidate.get("ref_type") or "").strip().upper() == "ORDER_ENTRY"
         and str(candidate.get("source") or "").strip() == "fact_order_entries_kaspi"
-        and not str(candidate.get("ref_id") or "").startswith("RECOV-CURRENT_CRM-")
-        and bool(str(candidate.get("ref_id") or "").strip())
+        and not ref_id.startswith(("RECOV-CURRENT_CRM-", "RECOV-WORKBOOK-"))
+        and bool(ref_id.strip())
         and bool(str(candidate.get("order_id") or "").strip())
         and bool(str(candidate.get("store_code") or "").strip())
         and bool(str(candidate.get("delivered_date") or "").strip())
@@ -201,22 +205,66 @@ def _is_allowed_fact_order_entry(candidate: dict[str, Any]) -> bool:
     )
 
 
-def _entry_delivery_costs(conn: sqlite3.Connection, entry_ids: list[str]) -> dict[str, float]:
-    if not entry_ids:
-        return {}
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(fact_order_entries_kaspi)").fetchall()}
-    if "delivery_cost_kzt" not in cols:
-        return {}
-    placeholders = ",".join("?" * len(entry_ids))
-    rows = conn.execute(
-        f"""
-        SELECT entry_id, delivery_cost_kzt
-        FROM fact_order_entries_kaspi
-        WHERE entry_id IN ({placeholders})
-        """,
-        entry_ids,
-    ).fetchall()
-    return {str(row["entry_id"]): float(row["delivery_cost_kzt"] or 0.0) for row in rows}
+def _seller_delivery_cost_allocations(
+    conn: sqlite3.Connection,
+    target_candidates: list[dict[str, Any]],
+    *,
+    allocation_universe: list[dict[str, Any]],
+) -> dict[str, float | None]:
+    seller_fees, ambiguous_order_keys = _load_order_seller_delivery_fees(conn)
+    target_grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    universe_grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for candidate in target_candidates:
+        order_key = (
+            str(candidate.get("order_id") or "").strip(),
+            str(candidate.get("store_code") or "").strip().upper(),
+        )
+        target_grouped.setdefault(order_key, []).append(candidate)
+    for candidate in allocation_universe:
+        order_key = (
+            str(candidate.get("order_id") or "").strip(),
+            str(candidate.get("store_code") or "").strip().upper(),
+        )
+        universe_grouped.setdefault(order_key, []).append(candidate)
+
+    allocations: dict[str, float | None] = {}
+    for order_key, targets in target_grouped.items():
+        if order_key in ambiguous_order_keys:
+            raise D1CashInRepairError(
+                f"ambiguous seller delivery fee for {order_key[0]}:{order_key[1]}"
+            )
+        order_candidates = universe_grouped.get(order_key, [])
+        if not order_candidates or any(
+            str(candidate.get("ref_type") or "").strip().upper() != "ORDER_ENTRY"
+            for candidate in order_candidates
+        ):
+            raise D1CashInRepairError(
+                f"complete ORDER_ENTRY allocation universe unavailable for {order_key[0]}:{order_key[1]}"
+            )
+        allocation_lines = [
+            {
+                "quantity": float(candidate.get("quantity") or 0.0),
+                "total_price_kzt": float(candidate.get("amount_basis_kzt") or 0.0),
+            }
+            for candidate in order_candidates
+        ]
+        _allocate_seller_delivery_fee(allocation_lines, seller_fees.get(order_key))
+        by_ref_id: dict[str, float | None] = {}
+        for candidate, line in zip(order_candidates, allocation_lines):
+            ref_id = str(candidate.get("ref_id") or "").strip()
+            if not ref_id or ref_id in by_ref_id:
+                raise D1CashInRepairError(
+                    f"duplicate or blank ORDER_ENTRY identity in allocation universe for {order_key[0]}:{order_key[1]}"
+                )
+            by_ref_id[ref_id] = line.get("seller_delivery_cost_total_kzt")
+        for target in targets:
+            ref_id = str(target.get("ref_id") or "").strip()
+            if ref_id not in by_ref_id:
+                raise D1CashInRepairError(
+                    f"target entry missing from allocation universe: {order_key[0]}:{ref_id}"
+                )
+            allocations[ref_id] = by_ref_id[ref_id]
+    return allocations
 
 
 def _cash_account(store_code: str) -> str:
@@ -227,7 +275,7 @@ def _event_from_candidate(
     candidate: dict[str, Any],
     *,
     weights: dict[str, float],
-    delivery_costs: dict[str, float],
+    seller_delivery_costs: dict[str, float | None],
     run_id: str,
 ) -> dict[str, Any]:
     quantity = float(candidate.get("quantity") or 0.0)
@@ -240,7 +288,7 @@ def _event_from_candidate(
         "total_price_kzt": total,
         "sku_key": str(candidate.get("sku_key") or "").strip(),
         "sku_id": str(candidate.get("sku_id") or "").strip(),
-        "delivery_cost_kzt": delivery_costs.get(ref_id),
+        "seller_delivery_cost_total_kzt": seller_delivery_costs.get(ref_id),
     }
     amount = _net_cash_amount_for_line(line, str(candidate["delivered_date"]), weights)
     if amount <= 0:
@@ -295,6 +343,7 @@ def repair_d1_cash_in_from_validator_evidence(
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         coverage_before = evaluate_order_cashflow_coverage_conn(conn, as_of=as_of)
+        allocation_universe = _build_d1_candidates(conn, as_of=as_of)
         missing = _missing_cash_candidates(conn, as_of=as_of)
         allowed_recovered = [candidate for candidate in missing if _is_allowed_recovered_entry(candidate)]
         allowed_fact_entries = [
@@ -318,11 +367,19 @@ def repair_d1_cash_in_from_validator_evidence(
                 raise D1CashInRepairError(
                     f"refusing apply with {len(blocked)} non-recovered-entry missing D1 candidates"
                 )
-        entry_ids = [str(candidate["ref_id"]) for candidate in allowed]
-        delivery_costs = _entry_delivery_costs(conn, entry_ids)
+        seller_delivery_costs = _seller_delivery_cost_allocations(
+            conn,
+            allowed,
+            allocation_universe=allocation_universe,
+        )
         weights = _load_dim_sku_weights(conn)
         events = [
-            _event_from_candidate(candidate, weights=weights, delivery_costs=delivery_costs, run_id=run_id)
+            _event_from_candidate(
+                candidate,
+                weights=weights,
+                seller_delivery_costs=seller_delivery_costs,
+                run_id=run_id,
+            )
             for candidate in allowed
         ]
         if events:
