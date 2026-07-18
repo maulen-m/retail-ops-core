@@ -31,6 +31,7 @@ from scripts.validate_line31_final_creative_mapping import (  # noqa: E402
 )
 from scripts.validate_line31_launch_readiness import (  # noqa: E402
     DEFAULT_EVIDENCE_ROOT,
+    _current_mapping_for_evidence,
     validate_launch_readiness,
 )
 from scripts.validate_line31_owner_objective_source_freshness import (  # noqa: E402
@@ -154,7 +155,7 @@ def build_packet(
     owner_source_freshness_ok = owner_source_freshness.get("ok") is True
     source_freshness_blockers = list(owner_source_freshness.get("errors", []))
 
-    mapping = mapping_path or evidence_root / DEFAULT_MAPPING.name
+    mapping = _current_mapping_for_evidence(evidence_root, mapping_path)
     pending = validate_launch_readiness(
         evidence_root,
         allow_pending_creative=True,
@@ -170,7 +171,11 @@ def build_packet(
     next_action = build_report(
         evidence_root=evidence_root,
         mapping_path=mapping,
-        approval_path=evidence_root / DEFAULT_APPROVAL_PATH.name,
+        approval_path=(
+            evidence_root / DEFAULT_APPROVAL_PATH.name
+            if evidence_root.resolve() != DEFAULT_EVIDENCE_ROOT.resolve()
+            else None
+        ),
     )
     gate = _packet_gate(pending, strict, owner_source_freshness)
     packet_next_action = next_action["next_action"]

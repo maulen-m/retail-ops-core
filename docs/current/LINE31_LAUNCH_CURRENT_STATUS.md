@@ -1,13 +1,13 @@
 # LINE31 Launch Current Status
 
-Generated: `2026-07-03T00:13:43+05:00`
+Generated: `2026-07-18T18:38:24+05:00`
 
 Status: `YELLOW_META_PARTIAL_SHELL_PAUSED_BUDGET_REPAIR_PENDING`
 Owner-facing publish status: `YELLOW_SAFE_PAUSED__BUDGET_AND_APP_BLOCKERS_REMAIN`
 Post-expert integration: `INTEGRATED_STRICT_GATE_ADDENDUM_20260602`
 Ready to publish: `false`
 Pending gate: `GREEN_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSED`
-Strict gate: `GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH`
+Strict gate: `YELLOW`
 
 ## Next Action
 
@@ -39,7 +39,7 @@ Keep the paused shell paused. Next, run/read a currency-safe Meta preflight and 
 - Latest customer journey traceability gate: `GREEN_LINE31_CUSTOMER_JOURNEY_TRACEABILITY_READY_PENDING_APPROVAL_NO_WRITE`
 - Latest LINE31 live customer-label probe: `~/Docs/Autonomous_business/exports/validation/line31_live_customer_label_probe_20260604_103115`
 - Latest LINE31 live customer-label gate: `GREEN_LINE31_LIVE_CUSTOMER_LABEL_VERIFIED_NO_WRITE`
-- Latest Meta API primary preflight: `~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260618_200624`
+- Latest Meta API primary preflight: `~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260717_101022`
 - Latest Meta API preflight gate: `GREEN_META_API_PRIMARY_LIVE_READONLY_READY`
 - Latest LINE31 Meta publish preflight: `~/Docs/Business_3/Facebook_ads/exports/validation/line31_meta_publish_preflight_20260604_132419`
 - Latest LINE31 Meta publish preflight gate: `YELLOW_META_LINE31_PUBLISH_PREFLIGHT_BLOCKED_NO_WRITE`
@@ -57,7 +57,7 @@ Keep the paused shell paused. Next, run/read a currency-safe Meta preflight and 
 ## Launch-Critical Paths
 
 - Final creative mapping: `~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json`
-- Owner approval phrase source: `~/Docs/Autonomous_business/exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_publish_intake_and_approval.md`
+- Owner approval phrase source: `~/Docs/Autonomous_business/exports/validation/line31_deploy_liveqa_readiness_sequence_20260603_180957/NEXT_META_PUBLISH_APPROVAL_PHRASE.txt`
 
 ## Missing Or Pending
 
@@ -68,7 +68,7 @@ Keep the paused shell paused. Next, run/read a currency-safe Meta preflight and 
 
 ## Non-Creative Blockers
 
-- None
+- current non-creative gate is not green-except-creative: One or more LINE31 launch-blocking non-creative validators failed.; retained_noncreative_blockers=compact_child_cogs_integrity, profit_publication_integrity, generic_po_dashboard_stock_freshness_validator
 
 ## Latest Drop-Intake Commands
 
@@ -93,7 +93,7 @@ python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id lin
 ## Preferred One-Shot Command
 
 ```bash
-python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id line31_countrywide_v1 --asset-dir /absolute/path/to/final_creative_drop_folder --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --approval-text-file /absolute/path/to/pasted_owner_approval.txt --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --overwrite --json
+python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id line31_countrywide_v1 --asset-dir /absolute/path/to/final_creative_drop_folder --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --approval-phrase-path /absolute/path/to/current_sha_bound_owner_approval_phrase.txt --approval-text-file /absolute/path/to/pasted_owner_approval.txt --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --overwrite --json
 ```
 
 ## Standalone Approval Recorder
@@ -101,7 +101,7 @@ python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id lin
 Before publish, save the exact owner approval phrase in a separate evidence file and reference it from publish_authority.approval_evidence_path with matching SHA-256. Strict publish also requires a current tracking/redirect QA JSON evidence file with matching tracking_redirect_qa.evidence_sha256. For the standalone/manual route, use --require-mapping-ready so approval evidence cannot be recorded against a placeholder creative mapping.
 
 ```bash
-python3 scripts/record_line31_owner_publish_approval.py --require-mapping-ready --mapping ~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json --approval-text-file /absolute/path/to/pasted_owner_approval.txt --json
+python3 scripts/record_line31_owner_publish_approval.py --require-mapping-ready --mapping ~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json --approval-phrase-path ~/Docs/Autonomous_business/exports/validation/line31_deploy_liveqa_readiness_sequence_20260603_180957/NEXT_META_PUBLISH_APPROVAL_PHRASE.txt --approval-text-file /absolute/path/to/pasted_owner_approval.txt --json
 ```
 
 ## Meta API Primary

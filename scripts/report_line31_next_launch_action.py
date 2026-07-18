@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -28,6 +29,7 @@ DEFAULT_APPROVAL_PATH = (
     DEFAULT_EVIDENCE_ROOT / "final_creative_publish_intake_and_approval.md"
 )
 DEFAULT_EXPORTS_ROOT = PROJECT_ROOT / "exports" / "validation"
+DEFAULT_CURRENT_STATUS = PROJECT_ROOT / "docs" / "current" / "LINE31_LAUNCH_CURRENT_STATUS.json"
 DEFAULT_STARTER_PROMPT = (
     "Read the repo bootstrap context and execute "
     "~/Docs/Autonomous_business/docs/agent_handoffs/"
@@ -44,6 +46,7 @@ DEFAULT_ONE_SHOT_EXAMPLE = (
     "--landing-url 'https://acmewear.pro/line31' "
     "--kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' "
     "--creative-ready-declared "
+    "--approval-phrase-path /absolute/path/to/current_sha_bound_owner_approval_phrase.txt "
     "--approval-text-file /absolute/path/to/pasted_owner_approval.txt "
     "--tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json "
     "--overwrite "
@@ -82,6 +85,7 @@ DEFAULT_STANDALONE_APPROVAL_RECORDER_EXAMPLE = (
     "python3 scripts/record_line31_owner_publish_approval.py "
     "--require-mapping-ready "
     "--mapping exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_asset_mapping_template.json "
+    "--approval-phrase-path /absolute/path/to/current_sha_bound_owner_approval_phrase.txt "
     "--approval-text-file /absolute/path/to/pasted_owner_approval.txt "
     "--json"
 )
@@ -137,6 +141,18 @@ def _read_mapping_payload(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_current_status(path: Path = DEFAULT_CURRENT_STATUS) -> dict[str, Any]:
+    return _read_mapping_payload(path)
+
+
 def _latest_multi_creative_mapping(exports_root: Path = DEFAULT_EXPORTS_ROOT) -> Path | None:
     candidates = sorted(
         (
@@ -178,10 +194,39 @@ def _current_mapping_path(
     local_mapping = evidence_root / DEFAULT_MAPPING.name
     if evidence_root.resolve() != DEFAULT_EVIDENCE_ROOT.resolve() and local_mapping.is_file():
         return local_mapping
-    owner_approved_mapping = _latest_owner_approved_bridge_mapping(exports_root)
-    if owner_approved_mapping:
-        return owner_approved_mapping
-    return _latest_multi_creative_mapping(exports_root) or local_mapping
+    if evidence_root.resolve() == DEFAULT_EVIDENCE_ROOT.resolve():
+        status_mapping_raw = str(_read_current_status().get("mapping_path") or "").strip()
+        if status_mapping_raw:
+            status_mapping = Path(status_mapping_raw).expanduser()
+            if status_mapping.is_file():
+                return status_mapping
+    # Fail closed on the canonical runtime path. Historical owner-approved or
+    # mtime-selected mappings are evidence only and are never current authority.
+    return local_mapping
+
+
+def _current_sha_bound_approval_path(mapping: Path) -> Path | None:
+    status = _read_current_status()
+    sequence = status.get("latest_deploy_liveqa_sequence")
+    if not isinstance(sequence, dict):
+        return None
+    raw = str(sequence.get("next_meta_publish_approval_phrase_path") or "").strip()
+    if not raw:
+        return None
+    phrase_path = Path(raw).expanduser()
+    manifest_path = phrase_path.parent / "sequence_manifest.json"
+    if not phrase_path.is_file() or not manifest_path.is_file() or not mapping.is_file():
+        return None
+    manifest = _read_mapping_payload(manifest_path)
+    manifest_mapping = Path(str(manifest.get("output_mapping") or "")).expanduser()
+    if not manifest_mapping.is_file() or manifest_mapping.resolve() != mapping.resolve():
+        return None
+    phrase = phrase_path.read_text(encoding="utf-8").strip()
+    if phrase != str(manifest.get("meta_publish_approval_phrase") or "").strip():
+        return None
+    if f"sha256={_sha256(mapping)}" not in phrase:
+        return None
+    return phrase_path
 
 
 def _owner_source_freshness(
@@ -243,7 +288,7 @@ def build_report(
     evidence_root: Path = DEFAULT_EVIDENCE_ROOT,
     mapping_path: Path | None = None,
     exports_root: Path = DEFAULT_EXPORTS_ROOT,
-    approval_path: Path = DEFAULT_APPROVAL_PATH,
+    approval_path: Path | None = None,
     owner_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     mapping = _current_mapping_path(
@@ -252,6 +297,11 @@ def build_report(
         exports_root=exports_root,
     )
     mapping_payload = _read_mapping_payload(mapping)
+    resolved_approval_path = approval_path or (
+        _current_sha_bound_approval_path(mapping)
+        if evidence_root.resolve() == DEFAULT_EVIDENCE_ROOT.resolve()
+        else evidence_root / DEFAULT_APPROVAL_PATH.name
+    )
     pending = validate_launch_readiness(
         evidence_root,
         allow_pending_creative=True,
@@ -333,7 +383,12 @@ def build_report(
         "pending_gate": pending.gate,
         "strict_gate_ok": strict.ok,
         "strict_gate": strict.gate,
-        "missing_or_pending": _missing_from_errors(strict.errors),
+        "missing_or_pending": sorted(
+            set(
+                _missing_from_errors(strict.errors)
+                + ([] if resolved_approval_path else ["current SHA-bound owner approval phrase"])
+            )
+        ),
         "noncreative_blockers": noncreative_blockers,
         "owner_source_freshness_ok": owner_source_freshness_ok,
         "owner_source_freshness_gate": owner_source.get("gate", ""),
@@ -356,7 +411,7 @@ def build_report(
         "drop_validator_example_command": DEFAULT_DROP_VALIDATOR_EXAMPLE,
         "current_drop_validator_helper": "python3 scripts/validate_line31_current_final_creative_drop.py",
         "current_drop_validator_command": DEFAULT_CURRENT_DROP_VALIDATOR_COMMAND,
-        "approval_phrase_path": str(approval_path),
+        "approval_phrase_path": str(resolved_approval_path or ""),
         "approval_evidence_requirement": (
             "Before publish, save the exact owner approval phrase in a separate evidence file "
             "and reference it from publish_authority.approval_evidence_path with matching SHA-256. "
@@ -370,6 +425,7 @@ def build_report(
             "python3 scripts/record_line31_owner_publish_approval.py "
             "--require-mapping-ready "
             f"--mapping {mapping} "
+            f"--approval-phrase-path {resolved_approval_path or '/absolute/path/to/current_sha_bound_owner_phrase.txt'} "
             "--approval-text-file /absolute/path/to/pasted_owner_approval.txt "
             "--json"
         ),
@@ -490,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-root", type=Path, default=DEFAULT_EVIDENCE_ROOT)
     parser.add_argument("--mapping", type=Path, default=None)
-    parser.add_argument("--approval-path", type=Path, default=DEFAULT_APPROVAL_PATH)
+    parser.add_argument("--approval-path", type=Path, default=None)
     parser.add_argument("--owner-facts-path", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

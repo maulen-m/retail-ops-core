@@ -360,7 +360,7 @@ def test_current_status_points_to_latest_packet_and_pending_creative(tmp_path: P
     assert payload["owner_facing_publish_status"] == (
         "YELLOW_META_SETUP_READY_PAUSED__PENDING_FINAL_START_DECISION"
     )
-    assert payload["noncreative_blockers"] == []
+    assert payload["noncreative_blockers"]
     assert (
         "LINE31 Meta campaign, ad set, and exactly three ads are source-verified but still PAUSED"
         in payload["missing_or_pending"]
@@ -536,9 +536,9 @@ def test_current_status_points_to_latest_packet_and_pending_creative(tmp_path: P
     assert "prepare_line31_launch_readiness_from_assets.py" in payload["latest_drop_intake"][
         "one_shot_command"
     ]
-    assert payload["mapping_path"].endswith("final_creative_asset_mapping_template.json")
+    assert payload["mapping_path"].endswith("final_creative_asset_mapping_3ads_pending_publish.json")
     assert payload["approval_phrase_path"].endswith(
-        "final_creative_publish_intake_and_approval.md"
+        "NEXT_META_PUBLISH_APPROVAL_PHRASE.txt"
     )
     assert payload["safety"]["external_writes"] is False
 

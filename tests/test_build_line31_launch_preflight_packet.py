@@ -81,8 +81,8 @@ def test_build_current_line31_preflight_packet(tmp_path: Path) -> None:
     assert "publish_authority.approved must be true for publish readiness" in written_manifest[
         "missing_or_pending"
     ]
-    assert "tracking_redirect_qa.gate" in written_manifest["missing_or_pending"]
-    assert "tracking_redirect_qa.evidence_sha256" in written_manifest["missing_or_pending"]
+    assert "tracking_redirect_qa.gate" not in written_manifest["missing_or_pending"]
+    assert "tracking_redirect_qa.evidence_sha256" not in written_manifest["missing_or_pending"]
     if written_manifest["pending_ok"]:
         assert written_manifest["noncreative_blockers"] == []
     else:

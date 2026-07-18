@@ -1,11 +1,11 @@
 {
   "approval_evidence_requirement": "Before publish, save the exact owner approval phrase in a separate evidence file and reference it from publish_authority.approval_evidence_path with matching SHA-256. Strict publish also requires a current tracking/redirect QA JSON evidence file with matching tracking_redirect_qa.evidence_sha256. For the standalone/manual route, use --require-mapping-ready so approval evidence cannot be recorded against a placeholder creative mapping.",
-  "approval_phrase_path": "~/Docs/Autonomous_business/exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_publish_intake_and_approval.md",
+  "approval_phrase_path": "~/Docs/Autonomous_business/exports/validation/line31_deploy_liveqa_readiness_sequence_20260603_180957/NEXT_META_PUBLISH_APPROVAL_PHRASE.txt",
   "completion_audit_command": "python3 scripts/audit_line31_active_goal_completion.py --json",
   "current_drop_validator_command": "python3 scripts/validate_line31_current_final_creative_drop.py --json",
   "deploy_liveqa_sequence_execute_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --approval-text-file /absolute/path/to/exact_deploy_liveqa_approval.txt --execute-approved-deploy-liveqa --json",
   "deploy_liveqa_sequence_plan_command": "python3 scripts/run_line31_deploy_liveqa_readiness_sequence.py --json",
-  "generated_at": "2026-07-03T00:13:43+05:00",
+  "generated_at": "2026-07-18T18:38:24+05:00",
   "internal_kaspi_policy": "KEEP_INTERNAL_KASPI_LINE31_CAMPAIGNS_ON_UNTIL_SEPARATE_OWNER_APPROVAL",
   "latest_customer_journey_traceability_audit": {
     "audit_command": "python3 scripts/build_line31_customer_journey_traceability_audit.py --json",
@@ -479,7 +479,7 @@
     "three_ads_live_verified": false
   },
   "latest_meta_api_primary_preflight": {
-    "dir": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260618_200624",
+    "dir": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260717_101022",
     "env": {
       "enable_meta_write_env": "0",
       "meta_ad_account_id": "1517999585924947",
@@ -493,9 +493,9 @@
     },
     "exists": true,
     "gate": "GREEN_META_API_PRIMARY_LIVE_READONLY_READY",
-    "generated_at": "2026-06-18T20:06:24+05:00",
+    "generated_at": "2026-07-17T10:10:22+05:00",
     "live_readonly": true,
-    "manifest": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260618_200624/manifest.json",
+    "manifest": "~/Docs/Business_3/Facebook_ads/exports/validation/meta_api_primary_preflight_20260717_101022/manifest.json",
     "preflight_command": "cd ~/Docs/Business_3/Facebook_ads && PYTHONPATH=. python3 scripts/preflight_meta_api_primary.py --live-readonly --json",
     "write_gate_without_owner_phrase": {
       "ok": false,
@@ -1129,8 +1129,10 @@
     "three LINE31 Meta ads are not live/source-verified"
   ],
   "next_action": "Keep the paused shell paused. Next, run/read a currency-safe Meta preflight and either repair/rebuild the paused shell with exact owner approval, then solve the app-mode/UI fallback path before creating exactly three ads.",
-  "noncreative_blockers": [],
-  "one_shot_example_command": "python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id line31_countrywide_v1 --asset-dir /absolute/path/to/final_creative_drop_folder --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --approval-text-file /absolute/path/to/pasted_owner_approval.txt --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --overwrite --json",
+  "noncreative_blockers": [
+    "current non-creative gate is not green-except-creative: One or more LINE31 launch-blocking non-creative validators failed.; retained_noncreative_blockers=compact_child_cogs_integrity, profit_publication_integrity, generic_po_dashboard_stock_freshness_validator"
+  ],
+  "one_shot_example_command": "python3 scripts/prepare_line31_launch_readiness_from_assets.py --creative-id line31_countrywide_v1 --asset-dir /absolute/path/to/final_creative_drop_folder --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 --duration-seconds 18 --utm-placement reels --landing-url 'https://acmewear.pro/line31' --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' --creative-ready-declared --approval-phrase-path /absolute/path/to/current_sha_bound_owner_approval_phrase.txt --approval-text-file /absolute/path/to/pasted_owner_approval.txt --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json --overwrite --json",
   "owner_facing_publish_status": "YELLOW_SAFE_PAUSED__BUDGET_AND_APP_BLOCKERS_REMAIN",
   "pending_gate": "GREEN_LINE31_META_PARTIAL_SHELL_SAFETY_PAUSED",
   "post_expert_integration_status": "INTEGRATED_STRICT_GATE_ADDENDUM_20260602",
@@ -1140,8 +1142,8 @@
     "purpose": "stable local operator pointer only",
     "writes_protected_surfaces": false
   },
-  "standalone_approval_recorder_example_command": "python3 scripts/record_line31_owner_publish_approval.py --require-mapping-ready --mapping ~/Docs/Autonomous_business/exports/validation/line31_meta_publish_bridge_20260603_183005/final_creative_asset_mapping_3ads_owner_approved.json --approval-text-file /absolute/path/to/pasted_owner_approval.txt --json",
+  "standalone_approval_recorder_example_command": "python3 scripts/record_line31_owner_publish_approval.py --require-mapping-ready --mapping ~/Docs/Autonomous_business/exports/validation/line31_final_creative_assets_20260603_154442/final_creative_asset_mapping_3ads_pending_publish.json --approval-phrase-path ~/Docs/Autonomous_business/exports/validation/line31_deploy_liveqa_readiness_sequence_20260603_180957/NEXT_META_PUBLISH_APPROVAL_PHRASE.txt --approval-text-file /absolute/path/to/pasted_owner_approval.txt --json",
   "starter_prompt": "Read the repo bootstrap context and execute ~/Docs/Autonomous_business/docs/agent_handoffs/LINE31_FINAL_CREATIVE_META_PUBLISH_20260601_STARTERS/01_AGENT_1__FINAL_CREATIVE_META_PUBLISH__SERIAL.md.",
   "status": "YELLOW_META_PARTIAL_SHELL_PAUSED_BUDGET_REPAIR_PENDING",
-  "strict_gate": "GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH"
+  "strict_gate": "YELLOW"
 }

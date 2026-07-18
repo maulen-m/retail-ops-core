@@ -11,6 +11,7 @@ from scripts.validate_line31_final_creative_mapping import required_owner_approv
 from scripts.validate_line31_launch_readiness import REQUIRED_CLOSEOUT_TOKENS, READY_GATE
 
 CURRENT_SOURCE_BLOCKER = "Cash_Balances latest timestamp mismatch"
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
 
 
 def _sha(path: Path) -> str:
@@ -26,12 +27,7 @@ def _write_closeout(root: Path) -> None:
 
 
 def _write_approval_evidence(root: Path) -> Path:
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     evidence = root / "owner_approval_evidence.md"
     evidence.write_text(
         f"# Owner Approval Evidence\n\nRecorded: 2026-06-01T16:00:00+05:00\n\n{phrase}\n",
@@ -108,6 +104,7 @@ def _write_ready_mapping(root: Path, video: Path, thumbnail: Path) -> None:
     tracking_evidence = _write_tracking_qa_evidence(root)
     mapping = {
         "purpose": "LINE31 countrywide Meta launch final creative mapping intake template",
+        "source_gate": "RUNTIME_ASSET_MAPPING_PREPARED",
         "creative_ready_declaration_received": True,
         "internal_kaspi_line31_campaigns_policy": (
             "KEEP_ON_UNTIL_OWNER_CREATIVE_READY_DECLARATION_AND_SEPARATE_PAUSE_APPROVAL"
@@ -154,10 +151,7 @@ def _write_ready_mapping(root: Path, video: Path, thumbnail: Path) -> None:
         ],
         "publish_authority": {
             "owner_approval_required": True,
-            "approval_phrase_path": (
-                "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-                "final_creative_publish_intake_and_approval.md"
-            ),
+            "approval_phrase_path": str(SYNTHETIC_APPROVAL),
             "approved": True,
             "approval_evidence_path": str(approval_evidence),
             "approval_evidence_sha256": _sha(approval_evidence),
@@ -172,23 +166,25 @@ def _write_ready_mapping(root: Path, video: Path, thumbnail: Path) -> None:
 def test_report_current_state_points_to_fill_creative_mapping() -> None:
     report = build_report()
 
-    assert report["status"] == "YELLOW_OWNER_SOURCE_FRESHNESS_BLOCKERS"
+    assert report["status"] == "YELLOW"
     assert report["ready_to_publish"] is False
-    assert report["pending_gate_ok"] is True
-    assert report["pending_gate"] == "GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH"
-    assert report["strict_gate_ok"] is True
-    assert report["strict_gate"] == "GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH"
-    assert report["noncreative_blockers"] == []
+    assert report["pending_gate_ok"] is False
+    assert report["pending_gate"] == "YELLOW"
+    assert report["strict_gate_ok"] is False
+    assert report["strict_gate"] == "YELLOW"
+    assert report["noncreative_blockers"]
     assert report["owner_source_freshness_ok"] is False
     assert any(CURRENT_SOURCE_BLOCKER in item for item in report["source_freshness_blockers"])
     assert report["final_assets_ready"] is True
     assert report["live_tracking_green"] is True
     assert "assets[0].video_sha256" not in report["missing_or_pending"]
-    assert report["missing_or_pending"] == []
+    assert report["missing_or_pending"] == [
+        "publish_authority.approved must be true for publish readiness"
+    ]
     assert "tracking_redirect_qa.evidence_path" not in report["missing_or_pending"]
     assert "tracking_redirect_qa.evidence_sha256" not in report["missing_or_pending"]
     assert "tracking_redirect_qa.gate" not in report["missing_or_pending"]
-    assert "owner objective source freshness" in report["next_action"]
+    assert "non-creative LINE31 strict blockers" in report["next_action"]
     assert (
         report["one_shot_readiness_helper"]
         == "python3 scripts/prepare_line31_launch_readiness_from_assets.py"
@@ -308,9 +304,11 @@ def test_report_command_outputs_json() -> None:
 
     assert completed.returncode == 0
     payload = json.loads(completed.stdout)
-    assert payload["status"] == "YELLOW_OWNER_SOURCE_FRESHNESS_BLOCKERS"
+    assert payload["status"] == "YELLOW"
     assert payload["ready_to_publish"] is False
-    assert payload["missing_or_pending"] == []
+    assert payload["missing_or_pending"] == [
+        "publish_authority.approved must be true for publish readiness"
+    ]
     assert payload["owner_source_freshness_ok"] is False
     assert any(CURRENT_SOURCE_BLOCKER in item for item in payload["source_freshness_blockers"])
     assert "one_shot_readiness_helper" in payload
@@ -323,4 +321,4 @@ def test_report_command_outputs_json() -> None:
     assert "--require-mapping-ready" in payload[
         "standalone_approval_recorder_example_command"
     ]
-    assert payload["noncreative_blockers"] == []
+    assert payload["noncreative_blockers"]

@@ -228,7 +228,7 @@ def test_next_inputs_command_outputs_json() -> None:
     payload = json.loads(completed.stdout)
     assert payload["current_status"].startswith("YELLOW_")
     assert payload["ready_to_publish"] is False
-    assert payload["strict_gate"] == "GREEN_LAUNCH_READY_FOR_OWNER_APPROVED_META_PUBLISH"
+    assert payload["strict_gate"] == "YELLOW"
     assert payload["gate"] in {
         "WAITING_FOR_EXPERT_ANSWER_OR_FINAL_CREATIVE",
         "READY_TO_INGEST_EXPERT_ANSWER",
