@@ -163,9 +163,12 @@ def add_ledger_event(
     reference_id: str = None,
     reference_type: str = None,
     kaspi_offer_name: str = None,
+    kaspi_article: str = None,
+    line_identity_key: str = None,
     notes: str = None,
     input_source: str = "SYSTEM",
     created_by: str = "system",
+    idempotency_key: str | None = None,
     db_path: Optional[Path] = None,
 ) -> int:
     """
@@ -182,6 +185,8 @@ def add_ledger_event(
         reference_id: order_id, po_id, or adjustment_id
         reference_type: SALE/PO/ADJUSTMENT
         kaspi_offer_name: For sales events, the Kaspi listing name
+        kaspi_article: Source-proven public Kaspi article when available
+        line_identity_key: Stable normalized public-offer line identity
         notes: Free-text notes
         input_source: SYSTEM/MANUAL/IMPORT/API
         created_by: User or system that created this event
@@ -228,14 +233,26 @@ def add_ledger_event(
         previous_balance = balance_row["total"] if balance_row else 0
         running_balance = previous_balance + qty_change
 
-        # Insert the event
-        cursor = conn.execute("""
-            INSERT INTO stock_ledger (
-                event_date, event_type, sku_key, sku_id, my_size, store_code,
-                qty_change, running_balance, reference_id, reference_type,
-                kaspi_offer_name, notes, input_source, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(stock_ledger)").fetchall()
+        }
+        fields = [
+            "event_date",
+            "event_type",
+            "sku_key",
+            "sku_id",
+            "my_size",
+            "store_code",
+            "qty_change",
+            "running_balance",
+            "reference_id",
+            "reference_type",
+            "kaspi_offer_name",
+            "notes",
+            "input_source",
+            "created_by",
+        ]
+        values = [
             event_date.isoformat() if isinstance(event_date, date) else event_date,
             event_type,
             sku_key,
@@ -250,7 +267,25 @@ def add_ledger_event(
             notes,
             input_source,
             created_by,
-        ))
+        ]
+        if idempotency_key is not None:
+            if "idempotency_key" not in columns:
+                raise RuntimeError(
+                    "stock_ledger.idempotency_key is required for an idempotent ledger write"
+                )
+            fields.append("idempotency_key")
+            values.append(idempotency_key)
+        if kaspi_article is not None and "kaspi_article" in columns:
+            fields.append("kaspi_article")
+            values.append(str(kaspi_article).strip())
+        if line_identity_key is not None and "line_identity_key" in columns:
+            fields.append("line_identity_key")
+            values.append(str(line_identity_key).strip().upper())
+        cursor = conn.execute(
+            f"INSERT INTO stock_ledger ({', '.join(fields)}) "
+            f"VALUES ({', '.join('?' for _ in fields)})",
+            values,
+        )
 
         return cursor.lastrowid
 
