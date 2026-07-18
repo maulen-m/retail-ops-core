@@ -3,41 +3,41 @@
 ## Amounts are raw balances in account currency.
 
 # ==============================================================================
-# TOTALS (as of 2026-07-02)
+# TOTALS (as of 2026-07-17)
 # ==============================================================================
 #
 # By Currency (FX rates from dim_fx_rates 2026-06-13):
 #   | Currency | Amount    | Rate | KZT Equivalent |
 #   |----------|-----------|------|----------------|
-#   | KZT      | 2,098,000 |    1 |      2,098,000 |
+#   | KZT      | 1,497,000 |    1 |      1,497,000 |
 #   | RUB      |    10,000 |  6.6 |         66,000 |
 #   | USD      |       387 |  485 |        187,695 |
 #   | USDT     |       501 |  485 |        242,985 |
-#   | Total    |           |      |  2,594,680 KZT |
+#   | Total    |           |      |  1,993,680 KZT |
 #
 # By Store:
-#   - UNIVERSAL: 763,000 KZT + 10,000 RUB + 387 USD + 501 USDT
+#   - UNIVERSAL: 611,000 KZT + 10,000 RUB + 387 USD + 501 USDT
 #   - 11KZ: 0 KZT + 0 USDT
-#   - STOREB: 89,000 KZT
-#   - ACMEWEAR: 1,246,000 KZT
+#   - STOREB: 276,000 KZT
+#   - ACMEWEAR: 610,000 KZT
 #   - MELVIS: 0 KZT
 #
 # ==============================================================================
 
-as_of: 2026-07-02 19:55:38 GMT+5
+as_of: 2026-07-17 20:36:01 GMT+5
 stores:
   UNIVERSAL:
     accounts:
       kaspi_gold:
-        balance_kzt: 476000
+        balance_kzt: 294000
       kaspi_pay:
-        balance_kzt: 10000
+        balance_kzt: 240000
       bcc:
         balance_kzt: 10000
       freedom:
         balance_kzt: 27000
       cash_kzt:
-        balance_kzt: 240000
+        balance_kzt: 40000
       cash_usd:
         balance_usd: 387
       cash_rub:
@@ -57,13 +57,13 @@ stores:
       kaspi_gold:
         balance_kzt: 0
       kaspi_pay:
-        balance_kzt: 89000
+        balance_kzt: 276000
   ACMEWEAR:
     accounts:
       kaspi_gold:
-        balance_kzt: 850000
+        balance_kzt: 560000
       kaspi_pay:
-        balance_kzt: 396000
+        balance_kzt: 50000
       cash_kzt:
         balance_kzt: 0
   MELVIS:

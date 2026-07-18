@@ -1036,3 +1036,78 @@ entries:
     account: kaspi_pay
     amount: 0.0
     currency: KZT
+- as_of: 2026-07-17 20:36:01 GMT+5
+  source: manual snapshot (Cash_Balances)
+  balances:
+  - store: UNIVERSAL
+    account: kaspi_gold
+    amount: 294000.0
+    currency: KZT
+  - store: UNIVERSAL
+    account: kaspi_pay
+    amount: 240000.0
+    currency: KZT
+  - store: UNIVERSAL
+    account: bcc
+    amount: 10000.0
+    currency: KZT
+  - store: UNIVERSAL
+    account: freedom
+    amount: 27000.0
+    currency: KZT
+  - store: UNIVERSAL
+    account: cash_kzt
+    amount: 40000.0
+    currency: KZT
+  - store: UNIVERSAL
+    account: cash_usd
+    amount: 387.0
+    currency: USD
+  - store: UNIVERSAL
+    account: cash_rub
+    amount: 10000.0
+    currency: RUB
+  - store: UNIVERSAL
+    account: binance_usdt
+    amount: 501.0
+    currency: USDT
+  - store: 11KZ
+    account: kaspi_gold
+    amount: 0.0
+    currency: KZT
+  - store: 11KZ
+    account: kaspi_pay
+    amount: 0.0
+    currency: KZT
+  - store: 11KZ
+    account: binance_usdt
+    amount: 0.0
+    currency: USDT
+  - store: STOREB
+    account: kaspi_gold
+    amount: 0.0
+    currency: KZT
+  - store: STOREB
+    account: kaspi_pay
+    amount: 276000.0
+    currency: KZT
+  - store: ACMEWEAR
+    account: kaspi_gold
+    amount: 560000.0
+    currency: KZT
+  - store: ACMEWEAR
+    account: kaspi_pay
+    amount: 50000.0
+    currency: KZT
+  - store: ACMEWEAR
+    account: cash_kzt
+    amount: 0.0
+    currency: KZT
+  - store: MELVIS
+    account: kaspi_gold
+    amount: 0.0
+    currency: KZT
+  - store: MELVIS
+    account: kaspi_pay
+    amount: 0.0
+    currency: KZT
