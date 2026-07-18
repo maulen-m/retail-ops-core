@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -9,6 +10,7 @@ import pytest
 
 from core.integrations.google_ops_board import load_ops_board_contract
 from scripts import google_ops_board_automation_common as common_mod
+from scripts import run_google_ops_board_closeout as closeout_mod
 from scripts import run_google_ops_board_closeout_scheduler as closeout_scheduler_mod
 from scripts import run_google_ops_board_closeout_watch_scheduler as watch_mod
 from scripts import run_google_ops_board_size_writeback_scheduler as writeback_scheduler_mod
@@ -48,6 +50,52 @@ class _FakeClient:
             while len(matrix[sheet_row - 1]) < column_index:
                 matrix[sheet_row - 1].append("")
             matrix[sheet_row - 1][column_index - 1] = str(update.get("value", ""))
+
+
+def _d3_split_contract():
+    contract = load_ops_board_contract()
+    sales_tab = contract.tabs["SalesRaw_Today"]
+    run_control_tab = contract.tabs["Run_Control"]
+    sales_auto_columns = ["AUTO_SIZE_SUGGESTION"]
+    run_control_auto_columns = [
+        "employee_ready_observed_at",
+        "auto_ready_for_closeout",
+        "auto_ready_set_by",
+        "auto_ready_set_at",
+    ]
+
+    sales_headers = list(sales_tab.headers)
+    sales_editables = list(sales_tab.editable_columns)
+    for column in sales_auto_columns:
+        if column not in sales_headers:
+            sales_headers.append(column)
+        if column not in sales_editables:
+            sales_editables.append(column)
+
+    run_control_headers = list(run_control_tab.headers)
+    run_control_editables = list(run_control_tab.editable_columns)
+    for column in run_control_auto_columns:
+        if column not in run_control_headers:
+            run_control_headers.append(column)
+        if column not in run_control_editables:
+            run_control_editables.append(column)
+
+    tabs = dict(contract.tabs)
+    tabs["SalesRaw_Today"] = replace(
+        sales_tab,
+        headers=sales_headers,
+        editable_columns=sales_editables,
+    )
+    tabs["Run_Control"] = replace(
+        run_control_tab,
+        headers=run_control_headers,
+        editable_columns=run_control_editables,
+    )
+    return replace(contract, version=4, tabs=tabs)
+
+
+def _row_values(headers: list[str], values: dict[str, object]) -> list[str]:
+    return [str(values.get(header, "")) for header in headers]
 
 
 def _write_creds(tmp_path: Path) -> Path:
@@ -1373,6 +1421,275 @@ def test_early_closeout_watch_writes_auto_fill_audit_after_1857(monkeypatch, tmp
     assert client.get_tab_values("Run_Control")[1][2] == watch_mod.AUTO_READY_SET_BY
     assert client.get_tab_values("Run_Control")[1][3] == write_time.isoformat()
     assert "AUTO_1857 probable backfill: 1 row(s)" in client.get_tab_values("Run_Control")[1][4]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="D3-CONTRACT: implementation must write AUTO_SIZE_SUGGESTION, never employee MY_SIZE",
+)
+def test_D3_CONTRACT_salesraw_interleaving_preserves_employee_size_and_resolves_employee_first(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = _d3_split_contract()
+    run_headers = contract.tabs["Run_Control"].headers
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    employee_ready_at = "2026-04-15T19:45:06+05:00"
+
+    class _D3SalesRawRaceClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                {
+                    "Run_Control": [
+                        run_headers,
+                        _row_values(
+                            run_headers,
+                            {
+                                "target_date": "2026-04-15",
+                                "ready_for_closeout": "",
+                            },
+                        ),
+                    ],
+                    "SalesRaw_Today": [
+                        sales_headers,
+                        _row_values(
+                            sales_headers,
+                            {
+                                "Status": "TODAY",
+                                "Date": "2026-04-15",
+                                "STORE_NAME": "Universal",
+                                "Quantity": "1",
+                                "Kaspi_name_core": "Line51",
+                                "OrderID": "1001",
+                                "MY_SIZE": "",
+                                "PROBABLE_SIZE": "2XL",
+                                "KASPI_OFFER_NAME": "Offer",
+                                "SKU_key": "CL_TEST",
+                                "_db_row_id": "1",
+                                "_line_key": "line",
+                                "_probable_size_source": "DECLARED_ORDER",
+                                "_probable_size_confidence": "HIGH",
+                                "AUTO_SIZE_SUGGESTION": "",
+                            },
+                        ),
+                    ],
+                }
+            )
+            self.injected = False
+
+        def _inject_employee_write(self) -> None:
+            if self.injected:
+                return
+            self.injected = True
+            sales_row = self._tab_values["SalesRaw_Today"][1]
+            sales_row[sales_headers.index("MY_SIZE")] = "L"
+            run_row = self._tab_values["Run_Control"][1]
+            run_row[run_headers.index("ready_for_closeout")] = "READY"
+            run_row[run_headers.index("ready_set_by")] = "EMPLOYEE"
+            run_row[run_headers.index("ready_set_at")] = employee_ready_at
+
+        def update_cells(self, updates: list[dict[str, object]]) -> None:
+            if any(str(update.get("range", "")).startswith("SalesRaw_Today!") for update in updates):
+                self._inject_employee_write()
+            super().update_cells(updates)
+
+        def update_tab_rows(
+            self,
+            tab_name: str,
+            headers: list[str],
+            rows: list[dict[str, object]],
+        ) -> None:
+            if tab_name == "SalesRaw_Today" and rows:
+                self._inject_employee_write()
+            super().update_tab_rows(tab_name, headers, rows)
+
+    client = _D3SalesRawRaceClient()
+    monkeypatch.setattr(watch_mod, "AUTO_PROBABLE_AUDIT_ROOT", tmp_path / "audit")
+    monkeypatch.setattr(
+        watch_mod,
+        "load_db_rows_for_writeback",
+        lambda *_args, **_kwargs: {"1": {"sku_key": "CL_TEST", "product_type": "CL"}},
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "now_almaty",
+        lambda: datetime(2026, 4, 15, 19, 45, 8, tzinfo=ZoneInfo("Asia/Almaty")),
+    )
+
+    watch_mod._maybe_auto_prepare_closeout(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        now=datetime(2026, 4, 15, 19, 45, 5, tzinfo=ZoneInfo("Asia/Almaty")),
+    )
+
+    sales_row = client.get_tab_values("SalesRaw_Today")[1]
+    assert sales_row[sales_headers.index("MY_SIZE")] == "L"
+    assert sales_row[sales_headers.index("AUTO_SIZE_SUGGESTION")] == "2XL"
+
+    monkeypatch.setattr(
+        closeout_mod,
+        "load_db_rows_for_writeback",
+        lambda *_args, **_kwargs: {
+            "1": {
+                "assigned_size": "",
+                "order_id": "1001",
+                "store_code": "UNIVERSAL",
+                "sku_key": "CL_TEST",
+                "product_type": "CL",
+                "line_identity_available": False,
+            }
+        },
+    )
+    readiness = closeout_mod.build_readiness_report(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        storeb_excluded=False,
+    )
+
+    assert readiness["pending_db_writeback_updates"][0]["raw_input_size"] == "L"
+    assert readiness["pending_db_writeback_updates"][0]["new_assigned_size"] == "L"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="D3-CONTRACT: implementation must write auto READY identity in disjoint cells",
+)
+def test_D3_CONTRACT_run_control_interleaving_preserves_employee_identity_and_discards_auto(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = _d3_split_contract()
+    run_headers = contract.tabs["Run_Control"].headers
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    employee_ready_at = "2026-04-15T19:45:07+05:00"
+
+    class _D3RunControlRaceClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                {
+                    "Run_Control": [
+                        run_headers,
+                        _row_values(
+                            run_headers,
+                            {
+                                "target_date": "2026-04-15",
+                                "ready_for_closeout": "",
+                            },
+                        ),
+                    ],
+                    "SalesRaw_Today": [
+                        sales_headers,
+                        _row_values(
+                            sales_headers,
+                            {
+                                "Status": "TODAY",
+                                "Date": "2026-04-15",
+                                "STORE_NAME": "Universal",
+                                "Quantity": "1",
+                                "Kaspi_name_core": "Line51",
+                                "OrderID": "1001",
+                                "MY_SIZE": "M",
+                                "PROBABLE_SIZE": "2XL",
+                                "KASPI_OFFER_NAME": "Offer",
+                                "SKU_key": "CL_TEST",
+                                "_db_row_id": "1",
+                                "_line_key": "line",
+                                "_probable_size_source": "DECLARED_ORDER",
+                                "_probable_size_confidence": "HIGH",
+                                "AUTO_SIZE_SUGGESTION": "",
+                            },
+                        ),
+                    ],
+                }
+            )
+            self.injected = False
+
+        def _inject_employee_ready(self) -> None:
+            if self.injected:
+                return
+            self.injected = True
+            run_row = self._tab_values["Run_Control"][1]
+            run_row[run_headers.index("ready_for_closeout")] = "READY"
+            run_row[run_headers.index("ready_set_by")] = "EMPLOYEE"
+            run_row[run_headers.index("ready_set_at")] = employee_ready_at
+
+        def update_cells(self, updates: list[dict[str, object]]) -> None:
+            if any(str(update.get("range", "")).startswith("Run_Control!") for update in updates):
+                self._inject_employee_ready()
+            super().update_cells(updates)
+
+        def update_tab_rows(
+            self,
+            tab_name: str,
+            headers: list[str],
+            rows: list[dict[str, object]],
+        ) -> None:
+            if tab_name == "Run_Control" and rows:
+                self._inject_employee_ready()
+            super().update_tab_rows(tab_name, headers, rows)
+
+    client = _D3RunControlRaceClient()
+    monkeypatch.setattr(watch_mod, "AUTO_PROBABLE_AUDIT_ROOT", tmp_path / "audit")
+    monkeypatch.setattr(
+        watch_mod,
+        "load_db_rows_for_writeback",
+        lambda *_args, **_kwargs: {"1": {"sku_key": "CL_TEST", "product_type": "CL"}},
+    )
+    auto_ready_at = datetime(2026, 4, 15, 19, 45, 8, tzinfo=ZoneInfo("Asia/Almaty"))
+    monkeypatch.setattr(watch_mod, "now_almaty", lambda: auto_ready_at)
+
+    watch_mod._maybe_auto_prepare_closeout(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        now=datetime(2026, 4, 15, 19, 45, 5, tzinfo=ZoneInfo("Asia/Almaty")),
+    )
+
+    run_row = client.get_tab_values("Run_Control")[1]
+    assert run_row[run_headers.index("ready_for_closeout")] == "READY"
+    assert run_row[run_headers.index("ready_set_by")] == "EMPLOYEE"
+    assert run_row[run_headers.index("ready_set_at")] == employee_ready_at
+    assert run_row[run_headers.index("auto_ready_for_closeout")] == "READY"
+    assert run_row[run_headers.index("auto_ready_set_by")] == "AUTO_CLOSEOUT_FALLBACK"
+    assert run_row[run_headers.index("auto_ready_set_at")] == auto_ready_at.isoformat()
+
+    monkeypatch.setattr(
+        closeout_mod,
+        "load_db_rows_for_writeback",
+        lambda *_args, **_kwargs: {
+            "1": {
+                "assigned_size": "M",
+                "order_id": "1001",
+                "store_code": "UNIVERSAL",
+                "sku_key": "CL_TEST",
+                "product_type": "CL",
+                "line_identity_available": False,
+            }
+        },
+    )
+    readiness = closeout_mod.build_readiness_report(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        storeb_excluded=False,
+    )
+
+    assert readiness["ready_source"] == "EMPLOYEE"
+    assert readiness["ready_set_at"] == employee_ready_at
+    assert any(
+        event.get("code") == "AUTO_READY_DISCARDED_EMPLOYEE_READY"
+        for event in readiness["resolution_events"]
+    )
 
 
 def test_auto_probable_fill_aborts_before_salesraw_write_when_employee_sets_size_and_ready(
