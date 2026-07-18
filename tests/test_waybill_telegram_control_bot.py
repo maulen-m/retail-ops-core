@@ -88,13 +88,19 @@ def test_run_control_ready_reuses_identity_and_hold_clears_it(
     class _Client:
         def __init__(self) -> None:
             self.updates: list[tuple[object, object]] = []
+            self.cell_updates: list[dict[str, object]] = []
 
         def get_tab_values(self, tab_name: str):
-            assert tab_name == "Run_Control"
-            return [headers, [source_row.get(header, "") for header in headers]]
+            if tab_name == "Run_Control":
+                return [headers, [source_row.get(header, "") for header in headers]]
+            assert tab_name == "SalesRaw_Today"
+            return [contract.tabs["SalesRaw_Today"].headers]
 
         def update_tab_rows(self, *_args, **_kwargs) -> None:
             self.updates.append((_args, _kwargs))
+
+        def update_cells(self, updates: list[dict[str, object]]) -> None:
+            self.cell_updates.extend(updates)
 
     client = _Client()
     creds = tmp_path / "svc.json"
@@ -110,13 +116,22 @@ def test_run_control_ready_reuses_identity_and_hold_clears_it(
     ready_identity = bot_mod.set_run_control_ready(target_date=bot_mod.date(2026, 4, 15))
     assert ready_identity["ready_set_at"] == "2026-04-15T16:59:00+05:00"
     assert client.updates == []
+    assert client.cell_updates == []
 
     hold_identity = bot_mod.set_run_control_hold(target_date=bot_mod.date(2026, 4, 15))
     assert hold_identity["ready_set_at"] == ""
-    assert len(client.updates) == 1
-    updated_row = client.updates[0][0][2][0]["row"]
-    assert updated_row["ready_for_closeout"] == "HOLD"
-    assert updated_row["ready_set_at"] == ""
+    assert client.updates == []
+    assert {update["field"] for update in client.cell_updates} == {
+        "ready_for_closeout",
+        "ready_set_by",
+        "ready_set_at",
+        "notes",
+    }
+    assert next(
+        update["value"]
+        for update in client.cell_updates
+        if update["field"] == "ready_for_closeout"
+    ) == "HOLD"
 
 
 def test_waybill_telegram_ready_reports_missing_sizes_without_starting_closeout(monkeypatch, tmp_path: Path):
@@ -205,6 +220,7 @@ def test_waybill_telegram_ready_denies_commands_without_allowed_user_gate(monkey
 
 def test_waybill_telegram_ready_allows_users_from_runtime_allowlist_file(monkeypatch, tmp_path: Path):
     sent_messages: list[str] = []
+    ready_calls: list[dict[str, object]] = []
 
     monkeypatch.delenv("TELEGRAM_WAYBILL_ALLOWED_USER_IDS", raising=False)
     monkeypatch.setattr(bot_mod, "STATE_FILE", tmp_path / "state.json")
@@ -229,13 +245,24 @@ def test_waybill_telegram_ready_allows_users_from_runtime_allowlist_file(monkeyp
         ],
     )
     monkeypatch.setattr(bot_mod, "build_waybill_control_readiness", lambda **_kwargs: _green_readiness())
-    monkeypatch.setattr(bot_mod, "set_run_control_ready", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        bot_mod,
+        "set_run_control_ready",
+        lambda **kwargs: ready_calls.append(kwargs),
+    )
     monkeypatch.setattr(bot_mod, "send_message", lambda **kwargs: sent_messages.append(kwargs["text"]) or {"success": True})
 
     rc = bot_mod.poll_once(now=datetime(2026, 4, 15, 17, 0, tzinfo=ZoneInfo("Asia/Almaty")))
 
     assert rc == 0
     assert any("accepted" in msg.lower() for msg in sent_messages)
+    assert ready_calls == [
+        {
+            "target_date": bot_mod.date(2026, 4, 15),
+            "note": "Telegram /ready fallback armed",
+            "actor": "TELEGRAM_USER:42",
+        }
+    ]
     pending = json.loads(bot_mod.STATE_FILE.read_text(encoding="utf-8"))["pending_ready"]
     assert pending["user_id"] == "42"
     assert pending["ready_set_at"] == "2026-04-15T17:00:00+05:00"
@@ -968,7 +995,12 @@ def test_waybill_telegram_halt_clears_pending_and_sets_run_control_hold(monkeypa
 
     assert rc == 0
     assert not state_path.exists() or "pending_ready" not in json.loads(state_path.read_text(encoding="utf-8"))
-    assert hold_calls
+    assert hold_calls == [
+        {
+            "target_date": bot_mod.date(2026, 4, 15),
+            "actor": "TELEGRAM_USER:42",
+        }
+    ]
     assert any("halted" in msg.lower() for msg in sent_messages)
 
 

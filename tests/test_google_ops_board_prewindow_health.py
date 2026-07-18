@@ -7,7 +7,11 @@ import pytest
 from openpyxl import Workbook
 
 from scripts import run_google_ops_board_prewindow_health as health_mod
-from core.integrations.google_ops_board import load_ops_board_contract
+from core.integrations.google_ops_board import (
+    OWNERSHIP_MODE_LEGACY_V3,
+    contract_for_ownership_mode,
+    load_ops_board_contract,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +64,46 @@ class _FakeClient:
 
 def _matrix(headers: list[str], rows: list[dict]) -> list[list[object]]:
     return [headers, *[[row.get(header, "") for header in headers] for row in rows]]
+
+
+def test_board_layout_health_reports_legacy_split_and_partial_modes() -> None:
+    contract = load_ops_board_contract()
+    legacy = contract_for_ownership_mode(contract, OWNERSHIP_MODE_LEGACY_V3)
+
+    class HeaderClient(_FakeClient):
+        def __init__(self, header_contract) -> None:
+            super().__init__(contract)
+            self.header_contract = header_contract
+
+        def get_tab_values(self, tab_name: str):
+            return [self.header_contract.tabs[tab_name].headers]
+
+    legacy_report = health_mod._build_google_layout_report(
+        client=HeaderClient(legacy), contract=contract
+    )
+    split_report = health_mod._build_google_layout_report(
+        client=HeaderClient(contract), contract=contract
+    )
+
+    class PartialClient(HeaderClient):
+        def get_tab_values(self, tab_name: str):
+            if tab_name == "SalesRaw_Today":
+                return [contract.tabs[tab_name].headers]
+            return [legacy.tabs[tab_name].headers]
+
+    partial_report = health_mod._build_google_layout_report(
+        client=PartialClient(legacy), contract=contract
+    )
+
+    assert legacy_report["ok"] is True
+    assert legacy_report["ownership_mode"] == "legacy_v3"
+    assert legacy_report["split_write_safety_active"] is False
+    assert split_report["ok"] is True
+    assert split_report["ownership_mode"] == "split_v1"
+    assert split_report["split_write_safety_active"] is True
+    assert partial_report["ok"] is False
+    assert partial_report["ownership_mode"] == "partial"
+    assert partial_report["error"] == "PARTIAL_BOARD_OWNERSHIP_LAYOUT"
 
 
 def test_live_board_parity_requires_exact_rows_and_preserves_nonblank_size(

@@ -4,7 +4,11 @@ import json
 import hashlib
 from pathlib import Path
 
-from core.integrations.google_ops_board import load_ops_board_contract
+from core.integrations.google_ops_board import (
+    OWNERSHIP_MODE_LEGACY_V3,
+    contract_for_ownership_mode,
+    load_ops_board_contract,
+)
 from scripts import sync_google_ops_board_sizes_to_db as size_sync_mod
 
 
@@ -101,8 +105,48 @@ def test_size_writeback_rejects_visible_line_identity_mismatch() -> None:
     ]
 
 
+def test_size_writeback_plan_preserves_effective_size_provenance() -> None:
+    row = {
+        "_db_row_id": "1",
+        "MY_SIZE": "XL",
+        "raw_my_size": "",
+        "raw_auto_size_suggestion": "XL",
+        "effective_size": "XL",
+        "effective_size_source": "AUTO_SIZE_SUGGESTION",
+        "OrderID": "1001",
+        "STORE_NAME": "Universal",
+        "_line_key": "1001|2026-04-22|CL_TEST|Test offer|1",
+    }
+
+    plan = size_sync_mod.plan_size_writeback(
+        [row],
+        {"1": _identity_db_row()},
+        key_column="_db_row_id",
+        source_column="MY_SIZE",
+        require_visible_identity=True,
+    )
+
+    assert plan["invalid_rows"] == []
+    assert plan["updates"] == [
+        {
+            "target_key": "1",
+            "raw_input_size": "XL",
+            "new_assigned_size": "XL",
+            "old_assigned_size": "",
+            "store_code": "UNIVERSAL",
+            "product_type": "CL",
+            "raw_my_size": "",
+            "raw_auto_size_suggestion": "XL",
+            "effective_size": "XL",
+            "effective_size_source": "AUTO_SIZE_SUGGESTION",
+        }
+    ]
+
+
 def test_size_writeback_apply_skips_db_backup_when_no_updates(monkeypatch, tmp_path: Path) -> None:
-    contract = load_ops_board_contract()
+    contract = contract_for_ownership_mode(
+        load_ops_board_contract(), OWNERSHIP_MODE_LEGACY_V3
+    )
     headers = contract.tabs["SalesRaw_Today"].headers
     matrix = [
         headers,

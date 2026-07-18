@@ -1,11 +1,60 @@
+from datetime import date
 from pathlib import Path
 import plistlib
+
+from core.integrations.google_ops_board import load_ops_board_contract
+from scripts import run_google_ops_board_closeout_scheduler as scheduler_mod
 
 
 def _read_plist(name: str) -> dict:
     path = Path(f"config/{name}")
     assert path.exists(), f"missing launchd plist: {name}"
     return plistlib.loads(path.read_bytes())
+
+
+def test_scheduler_reads_canonical_split_ready_identity(monkeypatch) -> None:
+    contract = load_ops_board_contract()
+    run_headers = contract.tabs["Run_Control"].headers
+    run_row = {header: "" for header in run_headers}
+    run_row.update(
+        {
+            "target_date": "2026-07-18",
+            "ready_for_closeout": "READY",
+            "employee_ready_observed_at": "2026-07-18T17:00:02+05:00",
+            "auto_ready_for_closeout": "READY",
+            "auto_ready_set_by": "AUTO_CLOSEOUT_FALLBACK",
+            "auto_ready_set_at": "2026-07-18T16:59:59+05:00",
+        }
+    )
+
+    class Client:
+        def get_tab_values(self, tab_name: str):
+            if tab_name == "Run_Control":
+                return [
+                    run_headers,
+                    [run_row.get(header, "") for header in run_headers],
+                ]
+            assert tab_name == "SalesRaw_Today"
+            return [contract.tabs["SalesRaw_Today"].headers]
+
+    monkeypatch.setattr(
+        scheduler_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: Client(),
+    )
+
+    identity = scheduler_mod._current_ready_identity(
+        service_account_json="/tmp/not-read.json",
+        spreadsheet_id_override="sheet-id",
+        target_date=date(2026, 7, 18),
+    )
+
+    assert identity == {
+        "target_date": "2026-07-18",
+        "ready_source": "EMPLOYEE",
+        "ready_set_at": "2026-07-18T17:00:02+05:00",
+        "ready_for_closeout": "READY",
+    }
 
 
 def test_google_ops_board_publish_plist_contract() -> None:
@@ -220,7 +269,7 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "18:30" in doc
     assert "every `60` seconds" in doc
     assert "60" in doc
-    assert "18:57" in doc
+    assert "19:45" in doc
     assert "09:00" in doc
     assert "24:00" in doc
     assert "Run_Control" in doc
@@ -229,7 +278,7 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "checkpoint" in doc
     assert "resume" in doc
     assert "run_control_resume_fingerprint" in doc
-    assert "target_date + ready_set_at" in doc
+    assert "target_date + ready_source + ready_set_at" in doc
     assert "no date/lookback expiry" in doc
     assert "required-orders path/SHA-256" in doc
     assert "manifest_sha256" in doc
@@ -241,7 +290,7 @@ def test_google_ops_board_contract_doc_and_installer_are_in_sync() -> None:
     assert "TELEGRAM_WAYBILL_ALLOWED_USER_IDS" in doc
     assert "/ready" in doc
     assert "/halt" in doc
-    assert "upsert-preserve" in doc
+    assert "cell-sparse" in doc
     assert "next-day rollover" in doc
     assert "protected sheets" in doc or "managed protected sheets" in doc
     normalized_doc = " ".join(doc.split())

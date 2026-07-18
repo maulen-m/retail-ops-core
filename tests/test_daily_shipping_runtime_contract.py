@@ -45,6 +45,26 @@ def test_generated_markdown_is_exactly_manifest_derived() -> None:
     assert actual == expected
     assert "09:00 to 24:00" in actual
     assert "17:00 Asia/Almaty" in actual
+    assert "Board contract version: `4`" in actual
+    assert "Board write ownership: `split_v1`" in actual
+    assert "Effective resolution: `employee_first_at_closeout_read`" in actual
+
+
+def test_board_ownership_manifest_drift_fails_closed(tmp_path: Path) -> None:
+    manifest = load_manifest(MANIFEST_PATH)
+    manifest["watch"]["board_ownership_mode"] = "legacy_v3"
+    manifest_path = tmp_path / "manifest.json"
+    _write_json(manifest_path, manifest)
+
+    report = validate_daily_shipping_runtime(
+        manifest_path=manifest_path,
+        project_root=PROJECT_ROOT,
+        check_installed=False,
+        check_generated_doc=False,
+    )
+
+    assert report["ok"] is False
+    assert "Board ownership mode drift" in report["errors"]
 
 
 def test_watch_constants_are_checked_against_manifest(tmp_path: Path) -> None:

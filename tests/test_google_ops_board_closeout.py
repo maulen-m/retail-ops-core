@@ -986,6 +986,7 @@ class _FakeClient:
     def __init__(self, tab_values: dict[str, list[list[str]]]) -> None:
         self._tab_values = tab_values
         self.updated_rows: list[tuple[str, list[str], list[dict[str, object]]]] = []
+        self.updated_cells: list[dict[str, object]] = []
 
     def get_tab_values(self, tab_name: str):
         return self._tab_values.get(tab_name, [])
@@ -998,6 +999,22 @@ class _FakeClient:
         for update in rows:
             row_values = [str(update["row"].get(header, "")) for header in headers]
             matrix[update["sheet_row"] - 1] = row_values
+
+    def update_cells(self, updates: list[dict[str, object]]) -> None:
+        self.updated_cells.extend(updates)
+        for update in updates:
+            tab_name, cell = str(update["range"]).split("!", 1)
+            column_letters = "".join(character for character in cell if character.isalpha())
+            sheet_row = int("".join(character for character in cell if character.isdigit()))
+            column_index = 0
+            for character in column_letters:
+                column_index = column_index * 26 + (ord(character.upper()) - 64)
+            matrix = self._tab_values[tab_name]
+            while len(matrix) < sheet_row:
+                matrix.append([])
+            while len(matrix[sheet_row - 1]) < column_index:
+                matrix[sheet_row - 1].append("")
+            matrix[sheet_row - 1][column_index - 1] = str(update.get("value", ""))
 
 
 def test_closeout_apply_stops_locally_before_any_write_when_halt_barrier_blocks(
@@ -1056,6 +1073,8 @@ def test_closeout_apply_stops_locally_before_any_write_when_halt_barrier_blocks(
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T16:59:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--run-root",
             str(tmp_path / "workflow_runs"),
             "--json-out",
@@ -1285,6 +1304,7 @@ def _write_manifest_for_expected(
 def _expected_payload_for_order_1001(
     *,
     ready_set_at: str = "2026-04-15T18:10:00+05:00",
+    ready_source: str = "EMPLOYEE",
 ) -> dict[str, object]:
     lines = [
         {
@@ -1313,6 +1333,7 @@ def _expected_payload_for_order_1001(
         "min_planned_shipment_date": None,
         "request_identity": {
             "target_date": "2026-04-15",
+            "ready_source": ready_source,
             "ready_set_at": ready_set_at,
         },
         "source": "fact_orders_kaspi_after_final_size_writeback",
@@ -1822,6 +1843,7 @@ def test_budget_exhaustion_is_non_sticky_and_same_ready_retry_converges(
         return report
 
     monkeypatch.setenv("ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT", "1")
+    monkeypatch.setenv(closeout_mod.AUTOMATION_LOCK_HELD_ENV, "1")
     monkeypatch.setattr(closeout_mod, "KaspiAPIClient", _Client)
     monkeypatch.setattr(
         closeout_mod.GoogleOpsBoardClient,
@@ -1868,6 +1890,8 @@ def test_budget_exhaustion_is_non_sticky_and_same_ready_retry_converges(
         "2026-04-15",
         "--expected-ready-set-at",
         ready_set_at,
+        "--expected-ready-source",
+        "EMPLOYEE",
         "--today-folder",
         str(today_folder),
         "--obligation-ledger-path",
@@ -1966,14 +1990,15 @@ def test_fresh_exact_detail_discharges_handed_over_obligation_before_retry_scope
     ] == "IN_DELIVERY"
 
 
-def test_success_status_resets_run_control_ready_toggle_to_hold() -> None:
+def test_success_status_is_sparse_and_preserves_employee_ready_identity() -> None:
     contract = load_ops_board_contract()
     client = _FakeClient(
         {
             "Run_Control": [
                 contract.tabs["Run_Control"].headers,
                 ["2026-04-15", "READY", "adil", "", "", "", "", ""],
-            ]
+            ],
+            "SalesRaw_Today": [contract.tabs["SalesRaw_Today"].headers],
         }
     )
 
@@ -1986,10 +2011,176 @@ def test_success_status_resets_run_control_ready_toggle_to_hold() -> None:
         hold_on_failure=False,
     )
 
-    row = client.updated_rows[-1][2][0]["row"]
-    assert row["ready_for_closeout"] == "HOLD"
+    fields = {update["field"] for update in client.updated_cells}
+    assert fields == {
+        "last_verified_ready_at",
+        "last_orchestrator_run_id",
+        "last_orchestrator_status",
+    }
+    row = dict(
+        zip(
+            contract.tabs["Run_Control"].headers,
+            client.get_tab_values("Run_Control")[1],
+        )
+    )
+    assert row["ready_for_closeout"] == "READY"
+    assert row["ready_set_by"] == "adil"
     assert row["last_orchestrator_run_id"] == "run-1"
     assert row["last_orchestrator_status"] == "OK"
+
+
+def test_partial_layout_blocks_closeout_status_write() -> None:
+    contract = load_ops_board_contract()
+    legacy = closeout_mod.contract_for_ownership_mode(contract, "legacy_v3")
+    client = _FakeClient(
+        {
+            "Run_Control": [
+                contract.tabs["Run_Control"].headers,
+                ["2026-04-15", "READY", "adil", "", "", "", "", ""],
+            ],
+            "SalesRaw_Today": [legacy.tabs["SalesRaw_Today"].headers],
+        }
+    )
+
+    closeout_mod._update_run_control_status(
+        client=client,
+        contract=contract,
+        target_date=date(2026, 4, 15),
+        run_id="run-1",
+        status="OK",
+        hold_on_failure=False,
+    )
+
+    assert client.updated_cells == []
+    assert client.updated_rows == []
+
+
+def test_split_readiness_keeps_invalid_employee_size_ahead_of_valid_auto(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = load_ops_board_contract()
+    run_headers = contract.tabs["Run_Control"].headers
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    run_row = {header: "" for header in run_headers}
+    run_row.update(
+        {
+            "target_date": "2026-04-15",
+            "ready_for_closeout": "READY",
+            "ready_set_by": "adil",
+            "ready_set_at": "2026-04-15T17:00:00+05:00",
+        }
+    )
+    sales_row = {header: "" for header in sales_headers}
+    sales_row.update(
+        {
+            "Status": "TODAY",
+            "Date": "2026-04-15",
+            "STORE_NAME": "Universal",
+            "OrderID": "1001",
+            "MY_SIZE": "invalid-employee-value",
+            "AUTO_SIZE_SUGGESTION": "L",
+            "_db_row_id": "1",
+            "_line_key": "1001|2026-04-15|SKU-1|Offer|1",
+        }
+    )
+    client = _FakeClient(
+        {
+            "Run_Control": [
+                run_headers,
+                [run_row.get(header, "") for header in run_headers],
+            ],
+            "SalesRaw_Today": [
+                sales_headers,
+                [sales_row.get(header, "") for header in sales_headers],
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        closeout_mod,
+        "load_db_rows_for_writeback",
+        lambda *_args, **_kwargs: {
+            "1": {
+                "assigned_size": "",
+                "order_id": "1001",
+                "store_code": "UNIVERSAL",
+                "sku_key": "SKU-1",
+                "product_type": "CL",
+                "line_identity_available": False,
+            }
+        },
+    )
+
+    report = closeout_mod.build_readiness_report(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        storeb_excluded=False,
+    )
+
+    effective = report["effective_salesraw_rows"][0]
+    assert effective["effective_size"] == "invalid-employee-value"
+    assert effective["effective_size_source"] == "EMPLOYEE_MY_SIZE"
+    assert report["invalid_size_count"] == 1
+    assert report["ready"] is False
+    assert any(
+        event["code"] == "AUTO_SIZE_DISCARDED_EMPLOYEE_VALUE"
+        for event in report["resolution_events"]
+    )
+
+
+def test_size_scope_adds_provenance_only_for_split_identity(tmp_path: Path) -> None:
+    row = {
+        "STORE_NAME": "Universal",
+        "OrderID": "1001",
+        "_db_row_id": "1",
+        "_line_key": "1001|2026-04-15|SKU-1|Offer|1",
+        "MY_SIZE": "L",
+        "raw_my_size": "",
+        "raw_auto_size_suggestion": "L",
+        "effective_size": "L",
+        "effective_size_source": "AUTO_SIZE_SUGGESTION",
+    }
+    legacy_path = tmp_path / "legacy_scope.json"
+    split_path = tmp_path / "split_scope.json"
+
+    closeout_mod._write_size_writeback_scope(
+        legacy_path,
+        target_date=date(2026, 4, 15),
+        request_identity={
+            "target_date": "2026-04-15",
+            "ready_set_at": "2026-04-15T17:00:00+05:00",
+        },
+        orders_by_store={"UNIVERSAL": {"1001"}},
+        salesraw_rows=[row],
+    )
+    closeout_mod._write_size_writeback_scope(
+        split_path,
+        target_date=date(2026, 4, 15),
+        request_identity={
+            "target_date": "2026-04-15",
+            "ready_source": "AUTO",
+            "ready_set_at": "2026-04-15T17:00:00+05:00",
+        },
+        orders_by_store={"UNIVERSAL": {"1001"}},
+        salesraw_rows=[row],
+    )
+
+    legacy_row = json.loads(legacy_path.read_text(encoding="utf-8"))["rows"][0]
+    split_row = json.loads(split_path.read_text(encoding="utf-8"))["rows"][0]
+    assert set(legacy_row) == {
+        "store_code",
+        "order_id",
+        "db_row_id",
+        "line_key",
+        "my_size",
+    }
+    assert split_row["raw_my_size"] == ""
+    assert split_row["raw_auto_size_suggestion"] == "L"
+    assert split_row["effective_size"] == "L"
+    assert split_row["effective_size_source"] == "AUTO_SIZE_SUGGESTION"
 
 
 def test_closeout_main_dry_run_executes_steps_in_order(monkeypatch, tmp_path: Path):
@@ -2404,7 +2595,15 @@ def test_resume_invalid_pin_after_partial_send_stops_before_rebuild_or_delivery(
                     [dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))]
                 ),
                 "run_control_resume_fingerprint": closeout_mod.run_control_resume_fingerprint(
-                    dict(zip(contract.tabs["Run_Control"].headers, run_control_row))
+                    {
+                        **dict(
+                            zip(
+                                contract.tabs["Run_Control"].headers,
+                                run_control_row,
+                            )
+                        ),
+                        "ready_source": "EMPLOYEE",
+                    }
                 ),
                 "delivery_artifacts": delivery_pin,
                 "stages": {"build_waybills": {"status": "ok"}},
@@ -2621,6 +2820,8 @@ def test_failed_shipping_pass_leaves_no_same_day_obligation_and_board_status_tod
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T17:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--run-root",
             str(tmp_path / "workflow_runs"),
             "--json-out",
@@ -2724,6 +2925,8 @@ def test_closeout_apply_fails_before_external_steps_when_store_context_is_invali
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T17:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--run-root",
             str(tmp_path / "workflow_runs"),
             "--json-out",
@@ -2853,6 +3056,8 @@ def test_closeout_attribution_health_red_runs_no_shipping_or_send_stage(
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T17:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--run-root",
             str(tmp_path / "workflow_runs"),
             "--json-out",
@@ -3032,6 +3237,8 @@ def test_closeout_apply_blocks_delivery_when_send_manifest_missing_expected_orde
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T17:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--today-folder",
             str(today_folder),
             "--run-root",
@@ -3179,6 +3386,8 @@ def test_closeout_apply_runs_shipped_truth_sync_after_delivery(
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T17:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--today-folder",
             str(today_folder),
             "--run-root",
@@ -3230,6 +3439,15 @@ def test_closeout_resume_reuses_successful_checkpoint_stages(monkeypatch, tmp_pa
 
     checkpoint_path = tmp_path / "workflow_runs" / "2026-04-15" / "closeout_checkpoint.json"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    resolution = closeout_mod.resolve_effective_board_state(
+        salesraw_rows=[
+            dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))
+        ],
+        run_control_row=dict(
+            zip(contract.tabs["Run_Control"].headers, run_control_row)
+        ),
+        target_date="2026-04-15",
+    )
     checkpoint_path.write_text(
         json.dumps(
             {
@@ -3239,10 +3457,10 @@ def test_closeout_resume_reuses_successful_checkpoint_stages(monkeypatch, tmp_pa
                 "spreadsheet_id": "sheet-id",
                 "service_account_json": str(creds.resolve()),
                 "salesraw_writeback_fingerprint": closeout_mod.salesraw_writeback_fingerprint(
-                    [dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))]
+                    resolution["effective_salesraw_rows"]
                 ),
-                "run_control_row_hash": closeout_mod._hash_run_control_row(
-                    dict(zip(contract.tabs["Run_Control"].headers, run_control_row))
+                "run_control_resume_fingerprint": closeout_mod.run_control_resume_fingerprint(
+                    resolution["effective_run_control_row"]
                 ),
                 "stages": {
                     "size_writeback": {
@@ -3295,6 +3513,8 @@ def test_closeout_resume_reuses_successful_checkpoint_stages(monkeypatch, tmp_pa
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T18:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--run-root",
             str(tmp_path / "workflow_runs"),
             "--checkpoint-path",
@@ -3352,6 +3572,15 @@ def test_closeout_resume_blocks_when_telegram_ledger_is_missing_after_attempt(
         today_folder=today_folder,
     )
     expected_sha256 = hashlib.sha256(expected_path.read_bytes()).hexdigest()
+    resolution = closeout_mod.resolve_effective_board_state(
+        salesraw_rows=[
+            dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))
+        ],
+        run_control_row=dict(
+            zip(contract.tabs["Run_Control"].headers, run_control_row)
+        ),
+        target_date="2026-04-15",
+    )
 
     checkpoint_path = tmp_path / "workflow_runs" / "2026-04-15" / "closeout_checkpoint.json"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3364,10 +3593,10 @@ def test_closeout_resume_blocks_when_telegram_ledger_is_missing_after_attempt(
                 "spreadsheet_id": "sheet-id",
                 "service_account_json": str(creds.resolve()),
                 "salesraw_writeback_fingerprint": closeout_mod.salesraw_writeback_fingerprint(
-                    [dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))]
+                    resolution["effective_salesraw_rows"]
                 ),
                 "run_control_resume_fingerprint": closeout_mod.run_control_resume_fingerprint(
-                    dict(zip(contract.tabs["Run_Control"].headers, run_control_row))
+                    resolution["effective_run_control_row"]
                 ),
                 "required_orders": {
                     "path": str(expected_path.resolve()),
@@ -3438,6 +3667,8 @@ def test_closeout_resume_blocks_when_telegram_ledger_is_missing_after_attempt(
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T18:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--today-folder",
             str(today_folder),
             "--run-root",
@@ -3504,6 +3735,15 @@ def test_closeout_resume_reuses_completed_shipped_truth_sync_checkpoint(
         telegram_ledger_state="confirmed",
     )
     expected_sha256 = hashlib.sha256(expected_path.read_bytes()).hexdigest()
+    resolution = closeout_mod.resolve_effective_board_state(
+        salesraw_rows=[
+            dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))
+        ],
+        run_control_row=dict(
+            zip(contract.tabs["Run_Control"].headers, run_control_row)
+        ),
+        target_date="2026-04-15",
+    )
 
     checkpoint_path = tmp_path / "workflow_runs" / "2026-04-15" / "closeout_checkpoint.json"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3516,10 +3756,10 @@ def test_closeout_resume_reuses_completed_shipped_truth_sync_checkpoint(
                 "spreadsheet_id": "sheet-id",
                 "service_account_json": str(creds.resolve()),
                 "salesraw_writeback_fingerprint": closeout_mod.salesraw_writeback_fingerprint(
-                    [dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))]
+                    resolution["effective_salesraw_rows"]
                 ),
                 "run_control_resume_fingerprint": closeout_mod.run_control_resume_fingerprint(
-                    dict(zip(contract.tabs["Run_Control"].headers, run_control_row))
+                    resolution["effective_run_control_row"]
                 ),
                 "required_orders": {
                     "path": str(expected_path.resolve()),
@@ -3590,6 +3830,8 @@ def test_closeout_resume_reuses_completed_shipped_truth_sync_checkpoint(
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T18:10:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--today-folder",
             str(today_folder),
             "--run-root",
@@ -3644,6 +3886,15 @@ def test_closeout_resume_keeps_external_checkpoint_when_only_run_control_status_
         step_report = {"name": stage, "command": [stage], "returncode": 0, "stdout": "", "stderr": "", "ok": True}
         (prior_run_dir / f"step_{stage}.json").write_text(json.dumps(step_report), encoding="utf-8")
 
+    checkpoint_resolution = closeout_mod.resolve_effective_board_state(
+        salesraw_rows=[
+            dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))
+        ],
+        run_control_row=dict(
+            zip(contract.tabs["Run_Control"].headers, checkpoint_run_control)
+        ),
+        target_date="2026-04-15",
+    )
     checkpoint_path = tmp_path / "workflow_runs" / "2026-04-15" / "closeout_checkpoint.json"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_path.write_text(
@@ -3655,13 +3906,13 @@ def test_closeout_resume_keeps_external_checkpoint_when_only_run_control_status_
                 "spreadsheet_id": "sheet-id",
                 "service_account_json": str(creds.resolve()),
                 "salesraw_writeback_fingerprint": closeout_mod.salesraw_writeback_fingerprint(
-                    [dict(zip(contract.tabs["SalesRaw_Today"].headers, salesraw_row))]
+                    checkpoint_resolution["effective_salesraw_rows"]
                 ),
                 "run_control_row_hash": closeout_mod._hash_run_control_row(
                     dict(zip(contract.tabs["Run_Control"].headers, checkpoint_run_control))
                 ),
                 "run_control_resume_fingerprint": closeout_mod.run_control_resume_fingerprint(
-                    dict(zip(contract.tabs["Run_Control"].headers, checkpoint_run_control))
+                    checkpoint_resolution["effective_run_control_row"]
                 ),
                 "stages": {
                     "size_writeback": {
@@ -3779,6 +4030,8 @@ def test_closeout_resume_fails_closed_on_checkpoint_mismatch(monkeypatch, tmp_pa
             "2026-04-15",
             "--expected-ready-set-at",
             "2026-04-15T17:00:00+05:00",
+            "--expected-ready-source",
+            "EMPLOYEE",
             "--run-root",
             str(tmp_path / "workflow_runs"),
             "--checkpoint-path",

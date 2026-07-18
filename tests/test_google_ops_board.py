@@ -9,14 +9,22 @@ import pytest
 from scripts import sync_google_ops_board as sync_mod
 from core.integrations.google_ops_board import (
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_LEGACY_V3,
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
     build_tab_reorder_requests,
     build_tab_ui_requests,
+    contract_for_ownership_mode,
+    detect_board_ownership_layout,
     extract_rows_from_matrix,
     extract_rows_with_positions_from_matrix,
     load_ops_board_contract,
     merge_rows_preserving_editables,
+    plan_sparse_cell_updates,
+    resolve_effective_board_state,
     rows_to_matrix,
     validate_contract_layout,
+    validate_ownership_contract,
 )
 from scripts.sync_google_ops_board import (
     UNSAFE_ATTRIBUTION_EXCEPTION_TYPE,
@@ -558,6 +566,9 @@ def _write_obligation_ledger(
 def test_default_google_ops_board_contract_loads_expected_tabs():
     contract = load_ops_board_contract()
 
+    assert contract.version == 4
+    assert contract.board_ownership_mode == "split_v1"
+    assert contract.effective_resolution == "employee_first_at_closeout_read"
     assert contract.spreadsheet_id == "1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg"
     assert contract.same_day_cutoff_default == "17:00"
     assert contract.same_day_cutoff_by_store == {}
@@ -598,6 +609,7 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
         "_probable_size_source",
         "_probable_size_confidence",
         "ExpressDeliveryStatus",
+        "AUTO_SIZE_SUGGESTION",
     ]
     assert contract.tabs["Run_Control"].editable_columns == [
         "ready_for_closeout",
@@ -616,7 +628,176 @@ def test_default_google_ops_board_contract_loads_expected_tabs():
     ]
     assert "ExpressDeliveryStatus" not in contract.tabs["SalesRaw_Today"].editable_columns
     assert "ExpressDeliveryStatus" not in contract.tabs["SalesRaw_Today"].ui["hidden_columns"]
+    assert contract.tabs["SalesRaw_Today"].ownership["employee_owned_columns"] == [
+        "HEIGHT",
+        "WEIGHT",
+        "MY_SIZE",
+    ]
+    assert contract.tabs["SalesRaw_Today"].ownership["watcher_owned_columns"] == [
+        "AUTO_SIZE_SUGGESTION"
+    ]
+    assert contract.tabs["Run_Control"].headers[-4:] == [
+        "employee_ready_observed_at",
+        "auto_ready_for_closeout",
+        "auto_ready_set_by",
+        "auto_ready_set_at",
+    ]
+    assert contract.tabs["Run_Control"].new_row_defaults["ready_for_closeout"] == ""
     assert contract.tabs["Needs_Size"].editable_columns == ["my_size", "size_status", "assigned_to", "note"]
+
+
+def test_v4_ownership_contract_detects_legacy_full_and_partial_layouts() -> None:
+    contract = load_ops_board_contract()
+    legacy = contract_for_ownership_mode(contract, OWNERSHIP_MODE_LEGACY_V3)
+
+    legacy_layout = detect_board_ownership_layout(
+        {
+            "SalesRaw_Today": legacy.tabs["SalesRaw_Today"].headers,
+            "Run_Control": legacy.tabs["Run_Control"].headers,
+        }
+    )
+    split_layout = detect_board_ownership_layout(
+        {
+            "SalesRaw_Today": contract.tabs["SalesRaw_Today"].headers,
+            "Run_Control": contract.tabs["Run_Control"].headers,
+        }
+    )
+    partial_layout = detect_board_ownership_layout(
+        {
+            "SalesRaw_Today": contract.tabs["SalesRaw_Today"].headers,
+            "Run_Control": legacy.tabs["Run_Control"].headers,
+        }
+    )
+    misordered_layout = detect_board_ownership_layout(
+        {
+            "SalesRaw_Today": contract.tabs["SalesRaw_Today"].headers,
+            "Run_Control": [
+                *contract.tabs["Run_Control"].headers[:-4],
+                *reversed(contract.tabs["Run_Control"].headers[-4:]),
+            ],
+        }
+    )
+
+    assert validate_ownership_contract(contract) == []
+    assert legacy_layout["ownership_mode"] == OWNERSHIP_MODE_LEGACY_V3
+    assert split_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1
+    assert partial_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL
+    assert partial_layout["ok"] is False
+    assert partial_layout["error"] == "PARTIAL_BOARD_OWNERSHIP_LAYOUT"
+    assert misordered_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL
+    assert misordered_layout["tabs"]["Run_Control"]["trailing_order_ok"] is False
+
+
+def test_employee_first_resolver_blocks_auto_fallback_and_binds_ready_source() -> None:
+    resolved = resolve_effective_board_state(
+        salesraw_rows=[
+            {
+                "_db_row_id": "41",
+                "OrderID": "ORDER-1",
+                "MY_SIZE": "not-a-size",
+                "AUTO_SIZE_SUGGESTION": "L",
+            }
+        ],
+        run_control_row={
+            "target_date": "2026-07-18",
+            "ready_for_closeout": "READY",
+            "ready_set_at": "",
+            "employee_ready_observed_at": "2026-07-18T17:00:01+05:00",
+            "auto_ready_for_closeout": "READY",
+            "auto_ready_set_by": "AUTO_CLOSEOUT_FALLBACK",
+            "auto_ready_set_at": "2026-07-18T16:59:59+05:00",
+        },
+        target_date="2026-07-18",
+    )
+
+    effective = resolved["effective_salesraw_rows"][0]
+    assert effective["effective_size"] == "not-a-size"
+    assert effective["effective_size_source"] == "EMPLOYEE_MY_SIZE"
+    assert resolved["request_identity"] == {
+        "target_date": "2026-07-18",
+        "ready_source": "EMPLOYEE",
+        "ready_set_at": "2026-07-18T17:00:01+05:00",
+    }
+    assert {
+        event["code"] for event in resolved["resolution_events"]
+    } >= {
+        "AUTO_SIZE_DISCARDED_EMPLOYEE_VALUE",
+        "AUTO_READY_DISCARDED_EMPLOYEE_READY",
+    }
+
+    held = resolve_effective_board_state(
+        salesraw_rows=[],
+        run_control_row={
+            "ready_for_closeout": "HOLD",
+            "auto_ready_for_closeout": "READY",
+            "auto_ready_set_at": "2026-07-18T17:00:00+05:00",
+        },
+        target_date="2026-07-18",
+    )
+    assert held["ready_for_closeout"] == "HOLD"
+    assert held["request_identity_ok"] is False
+    assert held["resolution_events"] == [
+        {
+            "code": "AUTO_READY_DISCARDED_EMPLOYEE_HOLD",
+            "target_date": "2026-07-18",
+        }
+    ]
+
+
+def test_sparse_publisher_plan_never_contains_preserved_cells() -> None:
+    tab = load_ops_board_contract().tabs["SalesRaw_Today"]
+    existing = {header: "" for header in tab.headers}
+    existing.update(
+        {
+            "_db_row_id": "41",
+            "Status": "TODAY",
+            "HEIGHT": "181",
+            "MY_SIZE": "L",
+            "AUTO_SIZE_SUGGESTION": "XL",
+        }
+    )
+    desired = dict(existing)
+    desired.update(
+        {
+            "Status": "OVERDUE",
+            "HEIGHT": "999",
+            "MY_SIZE": "2XL",
+            "AUTO_SIZE_SUGGESTION": "M",
+        }
+    )
+
+    updates = plan_sparse_cell_updates(
+        tab_contract=tab,
+        sheet_row=2,
+        existing_row=existing,
+        desired_row=desired,
+    )
+
+    assert updates == [
+        {"range": "SalesRaw_Today!A2", "value": "OVERDUE", "field": "Status"}
+    ]
+
+
+def test_v4_trailing_header_migration_plans_header_cells_only() -> None:
+    contract = load_ops_board_contract()
+    legacy = contract_for_ownership_mode(contract, OWNERSHIP_MODE_LEGACY_V3)
+
+    updates = sync_mod._plan_v4_trailing_header_migration(
+        contract,
+        {
+            "SalesRaw_Today": legacy.tabs["SalesRaw_Today"].headers,
+            "Run_Control": legacy.tabs["Run_Control"].headers,
+        },
+    )
+
+    assert [update["range"] for update in updates] == [
+        "SalesRaw_Today!R1",
+        "Run_Control!I1",
+        "Run_Control!J1",
+        "Run_Control!K1",
+        "Run_Control!L1",
+    ]
+    assert all(update["range"].endswith("1") for update in updates)
 
 
 def test_format_express_delivery_status_values() -> None:
@@ -1011,13 +1192,17 @@ def test_build_phase1_payload_groups_orders_into_board_tabs(tmp_path: Path):
     assert run_control == [
         {
             "target_date": "2026-04-15",
-            "ready_for_closeout": "HOLD",
+            "ready_for_closeout": "",
             "ready_set_by": "",
             "ready_set_at": "",
             "notes": "",
             "last_verified_ready_at": "",
             "last_orchestrator_run_id": "",
             "last_orchestrator_status": "",
+            "employee_ready_observed_at": "",
+            "auto_ready_for_closeout": "",
+            "auto_ready_set_by": "",
+            "auto_ready_set_at": "",
         }
     ]
 
@@ -2517,12 +2702,21 @@ def test_build_publish_plan_same_day_preserves_existing_rows_and_only_appends_ne
     assert plan["rollover"] is False
     assert plan["previous_target_date"] == "2026-04-15"
     assert plan["tab_actions"]["README"]["mode"] == "rewrite"
-    assert plan["tab_actions"]["SalesRaw_Today"]["mode"] == "upsert_preserve"
-    assert plan["tab_actions"]["Run_Control"]["mode"] == "upsert_preserve"
+    assert plan["tab_actions"]["SalesRaw_Today"]["mode"] == "upsert_sparse"
+    assert plan["tab_actions"]["Run_Control"]["mode"] == "upsert_sparse"
     assert plan["tab_actions"]["Orders_Today"]["mode"] == "rewrite"
     assert plan["tab_actions"]["Needs_Size"]["mode"] == "rewrite"
     assert plan["tab_actions"]["SalesRaw_Today"]["append_rows"] == [fresh_payload["SalesRaw_Today"][1]]
-    assert plan["tab_actions"]["SalesRaw_Today"]["update_rows"][0]["sheet_row"] == 2
+    assert plan["tab_actions"]["SalesRaw_Today"]["update_rows"] == []
+    assert plan["tab_actions"]["Run_Control"]["update_rows"] == []
+    sales_cell_updates = plan["tab_actions"]["SalesRaw_Today"]["cell_updates"]
+    assert sales_cell_updates
+    assert not {
+        "HEIGHT",
+        "WEIGHT",
+        "MY_SIZE",
+        "AUTO_SIZE_SUGGESTION",
+    } & {update["field"] for update in sales_cell_updates}
     assert plan["tab_actions"]["Run_Control"]["final_rows"][0]["ready_for_closeout"] == "READY"
     assert plan["tab_actions"]["Run_Control"]["final_rows"][0]["notes"] == "all sizes done"
     assert plan["tab_actions"]["Orders_Today"]["append_rows"] == []
@@ -2638,9 +2832,14 @@ def test_build_publish_plan_same_day_drops_stale_salesraw_rows_with_preserved_ed
     )
 
     action = plan["tab_actions"]["SalesRaw_Today"]
-    assert action["mode"] == "rewrite_preserve"
-    assert action["append_rows"] == []
+    assert action["mode"] == "upsert_sparse"
+    assert [row["_db_row_id"] for row in action["append_rows"]] == ["2"]
     assert action["update_rows"] == []
+    assert action["delete_rows"] == [2]
+    assert action["cell_updates"]
+    assert not {"HEIGHT", "WEIGHT", "MY_SIZE", "AUTO_SIZE_SUGGESTION"} & {
+        update["field"] for update in action["cell_updates"]
+    }
     assert [row["_db_row_id"] for row in action["final_rows"]] == ["1", "2"]
     assert action["final_rows"][0]["HEIGHT"] == "181"
     assert action["final_rows"][0]["WEIGHT"] == "83"
@@ -3435,7 +3634,7 @@ def test_build_publish_plan_uses_run_control_target_when_readme_is_empty():
 
     assert plan["previous_target_date"] == "2026-04-15"
     assert plan["same_day_preserve"] is True
-    assert plan["tab_actions"]["SalesRaw_Today"]["mode"] == "upsert_preserve"
+    assert plan["tab_actions"]["SalesRaw_Today"]["mode"] == "upsert_sparse"
     assert plan["tab_actions"]["SalesRaw_Today"]["append_rows"] == [fresh_payload["SalesRaw_Today"][1]]
     assert plan["tab_actions"]["SalesRaw_Today"]["final_rows"][0]["MY_SIZE"] == "L"
     assert plan["tab_actions"]["Run_Control"]["final_rows"][0]["ready_for_closeout"] == "READY"

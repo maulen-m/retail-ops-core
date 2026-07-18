@@ -8,12 +8,23 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from core.integrations.google_ops_board import load_ops_board_contract
+from core.integrations.google_ops_board import (
+    OWNERSHIP_MODE_LEGACY_V3,
+    contract_for_ownership_mode,
+    load_ops_board_contract as _load_ops_board_contract_v4,
+)
 from scripts import google_ops_board_automation_common as common_mod
 from scripts import run_google_ops_board_closeout as closeout_mod
 from scripts import run_google_ops_board_closeout_scheduler as closeout_scheduler_mod
 from scripts import run_google_ops_board_closeout_watch_scheduler as watch_mod
 from scripts import run_google_ops_board_size_writeback_scheduler as writeback_scheduler_mod
+
+
+def load_ops_board_contract():
+    """Legacy fixture view for the pre-D3 watcher regression corpus."""
+    return contract_for_ownership_mode(
+        _load_ops_board_contract_v4(), OWNERSHIP_MODE_LEGACY_V3
+    )
 
 
 class _FakeClient:
@@ -53,7 +64,7 @@ class _FakeClient:
 
 
 def _d3_split_contract():
-    contract = load_ops_board_contract()
+    contract = _load_ops_board_contract_v4()
     sales_tab = contract.tabs["SalesRaw_Today"]
     run_control_tab = contract.tabs["Run_Control"]
     sales_auto_columns = ["AUTO_SIZE_SUGGESTION"]
@@ -735,6 +746,7 @@ def test_auto_probable_closeout_never_writes_sizes_or_ready_to_wrong_date(
     assert report["salesraw_updates_applied"] == 0
     assert report["run_control_updated"] is False
     assert client.update_calls == []
+
     assert client.get_tab_values("SalesRaw_Today")[1][8] == ""
     assert client.get_tab_values("Run_Control")[1][1] == "HOLD"
 
@@ -1423,10 +1435,6 @@ def test_early_closeout_watch_writes_auto_fill_audit_after_1857(monkeypatch, tmp
     assert "AUTO_1857 probable backfill: 1 row(s)" in client.get_tab_values("Run_Control")[1][4]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D3-CONTRACT: implementation must write AUTO_SIZE_SUGGESTION, never employee MY_SIZE",
-)
 def test_D3_CONTRACT_salesraw_interleaving_preserves_employee_size_and_resolves_employee_first(
     monkeypatch,
     tmp_path: Path,
@@ -1556,10 +1564,6 @@ def test_D3_CONTRACT_salesraw_interleaving_preserves_employee_size_and_resolves_
     assert readiness["pending_db_writeback_updates"][0]["new_assigned_size"] == "L"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D3-CONTRACT: implementation must write auto READY identity in disjoint cells",
-)
 def test_D3_CONTRACT_run_control_interleaving_preserves_employee_identity_and_discards_auto(
     monkeypatch,
     tmp_path: Path,
@@ -1690,6 +1694,158 @@ def test_D3_CONTRACT_run_control_interleaving_preserves_employee_identity_and_di
         event.get("code") == "AUTO_READY_DISCARDED_EMPLOYEE_READY"
         for event in readiness["resolution_events"]
     )
+
+
+def test_D3_partial_layout_fails_closed_before_any_watcher_write(
+    tmp_path: Path,
+) -> None:
+    contract = _d3_split_contract()
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    run_headers = contract.tabs["Run_Control"].headers[:-4]
+    client = _FakeClient(
+        {
+            "SalesRaw_Today": [sales_headers],
+            "Run_Control": [
+                run_headers,
+                ["2026-04-15", "", "", "", "", "", "", ""],
+            ],
+        }
+    )
+
+    report = watch_mod._maybe_auto_prepare_closeout(
+        client=client,
+        contract=contract,
+        db_path=tmp_path / "app.db",
+        target_date=date(2026, 4, 15),
+        lookback_days=5,
+        now=datetime(
+            2026,
+            4,
+            15,
+            18,
+            57,
+            5,
+            tzinfo=ZoneInfo("Asia/Almaty"),
+        ),
+    )
+
+    assert report["ownership_mode"] == "partial"
+    assert report["blocked_reason"] == "PARTIAL_BOARD_OWNERSHIP_LAYOUT"
+    assert report["salesraw_updates_applied"] == 0
+    assert report["run_control_updated"] is False
+    assert client.update_calls == []
+
+    client.get_tab_values("Run_Control")[1][1] = "READY"
+    stamped = watch_mod._stamp_blank_ready_identity(
+        client=client,
+        contract=contract,
+        target_date=date(2026, 4, 15),
+        now=datetime(
+            2026,
+            4,
+            15,
+            18,
+            57,
+            6,
+            tzinfo=ZoneInfo("Asia/Almaty"),
+        ),
+    )
+    assert stamped["_halt_barrier_blocked"] == "PARTIAL_BOARD_OWNERSHIP_LAYOUT"
+    assert client.update_calls == []
+
+
+def test_D3_employee_hold_clears_only_the_watcher_observation() -> None:
+    contract = _d3_split_contract()
+    run_headers = contract.tabs["Run_Control"].headers
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    run_row = {header: "" for header in run_headers}
+    run_row.update(
+        {
+            "target_date": "2026-04-15",
+            "ready_for_closeout": "HOLD",
+            "ready_set_by": "EMPLOYEE",
+            "ready_set_at": "",
+            "employee_ready_observed_at": "2026-04-15T17:00:00+05:00",
+        }
+    )
+    client = _FakeClient(
+        {
+            "SalesRaw_Today": [sales_headers],
+            "Run_Control": [
+                run_headers,
+                [run_row.get(header, "") for header in run_headers],
+            ],
+        }
+    )
+
+    cleared = watch_mod._clear_employee_ready_observation_on_hold(
+        client=client,
+        contract=contract,
+        target_date=date(2026, 4, 15),
+    )
+
+    assert cleared is True
+    assert client.update_calls == [
+        {
+            "cells": [
+                {
+                    "range": "Run_Control!I2",
+                    "value": "",
+                }
+            ]
+        }
+    ]
+    observed = client.get_tab_values("Run_Control")[1]
+    assert observed[run_headers.index("ready_for_closeout")] == "HOLD"
+    assert observed[run_headers.index("ready_set_by")] == "EMPLOYEE"
+    assert observed[run_headers.index("employee_ready_observed_at")] == ""
+
+
+def test_D3_v4_code_keeps_exact_legacy_identity_write_shape(monkeypatch) -> None:
+    contract = _load_ops_board_contract_v4()
+    legacy = contract_for_ownership_mode(contract, OWNERSHIP_MODE_LEGACY_V3)
+    run_headers = legacy.tabs["Run_Control"].headers
+    client = _FakeClient(
+        {
+            "SalesRaw_Today": [legacy.tabs["SalesRaw_Today"].headers],
+            "Run_Control": [
+                run_headers,
+                ["2026-04-15", "READY", "EMPLOYEE", "", "", "", "", ""],
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        watch_mod,
+        "evaluate_closeout_halt_barrier",
+        lambda **_kwargs: {
+            "blocked": False,
+            "reason": "NO_HALT_BARRIER",
+            "allow_fresh_blank_ready": False,
+        },
+    )
+    now = datetime(
+        2026,
+        4,
+        15,
+        17,
+        0,
+        tzinfo=ZoneInfo("Asia/Almaty"),
+    )
+
+    stamped = watch_mod._stamp_blank_ready_identity(
+        client=client,
+        contract=contract,
+        target_date=date(2026, 4, 15),
+        now=now,
+    )
+
+    assert stamped["ready_set_at"] == now.isoformat()
+    assert len(client.update_calls) == 1
+    update = client.update_calls[0]
+    assert update["tab_name"] == "Run_Control"
+    assert update["headers"] == run_headers
+    assert "employee_ready_observed_at" not in update["headers"]
+    assert "auto_ready_for_closeout" not in update["headers"]
 
 
 def test_auto_probable_fill_aborts_before_salesraw_write_when_employee_sets_size_and_ready(
