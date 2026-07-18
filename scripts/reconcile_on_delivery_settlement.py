@@ -72,7 +72,15 @@ def _prepare_settlement_apply_guard(
         "production_apply": production_apply,
         "pre_sha256": _sha256_file(db_path),
     }
+    pre_sha256 = str(metadata["pre_sha256"])
+    if expected_pre_sha256 and pre_sha256 != expected_pre_sha256:
+        raise RuntimeError(
+            "DB SHA mismatch before settlement apply: "
+            f"expected {expected_pre_sha256}, observed {pre_sha256}"
+        )
     if not production_apply:
+        if expected_pre_sha256:
+            metadata["expected_pre_sha256"] = expected_pre_sha256
         return metadata
 
     if os.environ.get(PROD_WRITE_ENV_GATE) != "1":
@@ -86,13 +94,6 @@ def _prepare_settlement_apply_guard(
     pre_integrity = _sqlite_integrity_check(db_path)
     if pre_integrity.lower() != "ok":
         raise RuntimeError(f"production DB integrity_check failed before settlement apply: {pre_integrity}")
-    pre_sha256 = str(metadata["pre_sha256"])
-    if pre_sha256 != expected_pre_sha256:
-        raise RuntimeError(
-            "production DB SHA mismatch before settlement apply: "
-            f"expected {expected_pre_sha256}, observed {pre_sha256}"
-        )
-
     backup_path = backup_database(db_path, backup_dir, compress=False)
     backup_integrity = _sqlite_integrity_check(backup_path)
     if backup_integrity.lower() != "ok":
@@ -132,6 +133,21 @@ def _parse_date_maybe(value: str | None) -> str | None:
             return None
 
 
+def _normalize_order_id_allowlist(order_ids: set[str] | None) -> set[str] | None:
+    if order_ids is None:
+        return None
+    normalized = {str(value).strip() for value in order_ids if str(value).strip()}
+    if not normalized:
+        raise RuntimeError("order-id allowlist is empty")
+    return normalized
+
+
+def _read_order_id_file(path: Path) -> set[str]:
+    if not path.exists() or not path.is_file():
+        raise RuntimeError(f"order-id file not found: {path}")
+    return _normalize_order_id_allowlist(set(path.read_text(encoding="utf-8").splitlines())) or set()
+
+
 def _event_hash(event: dict[str, Any]) -> str:
     payload = "|".join(
         [
@@ -157,6 +173,7 @@ def find_settlement_gaps(
     since: str | None = None,
     until: str | None = None,
     tolerance_kzt: float = 1.0,
+    order_id_allowlist: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if not db_path.exists():
         raise FileNotFoundError(f"db not found: {db_path}")
@@ -202,6 +219,7 @@ def find_settlement_gaps(
             )
         else:
             sku_expr = "1"
+        status_date_expr = f"{date_col} AS status_date_source" if date_col else "NULL AS status_date_source"
         rows = conn.execute(
             f"""
             SELECT DISTINCT
@@ -210,14 +228,21 @@ def find_settlement_gaps(
                 sku_key,
                 sku_id,
                 UPPER(TRIM(COALESCE({status_col}, ''))) AS status,
-                {sku_expr} AS has_sku_identity
+                {sku_expr} AS has_sku_identity,
+                {status_date_expr}
             FROM fact_orders_kaspi
             WHERE COALESCE(TRIM(order_id), '') <> ''
               AND UPPER(TRIM(COALESCE({status_col}, ''))) IN ('COMPLETED', 'CANCELLED', 'RETURNED')
               {date_filter}
+            ORDER BY datetime(COALESCE(status_date_source, '1970-01-01')) DESC,
+                     order_id,
+                     sku_id
             """,
             tuple(params),
         ).fetchall()
+        order_allowlist = _normalize_order_id_allowlist(order_id_allowlist)
+        if order_allowlist is not None:
+            rows = [row for row in rows if str(row["order_id"] or "").strip() in order_allowlist]
 
         balances = conn.execute(
             """
@@ -252,11 +277,13 @@ def find_settlement_gaps(
             if abs(bal) <= float(tolerance_kzt):
                 continue
             seen_orders.add(order_id)
-            event_date = until_date.isoformat()
-            if date_col and date_col in row.keys():
-                parsed = _parse_date_maybe(row[date_col])
-                if parsed:
-                    event_date = parsed
+            parsed = _parse_date_maybe(row["status_date_source"])
+            if not parsed:
+                raise RuntimeError(
+                    f"{order_id}: missing or invalid terminal status timestamp from "
+                    f"{date_col or 'no_supported_date_column'}"
+                )
+            event_date = parsed
             gaps.append(
                 {
                     "order_id": order_id,
@@ -266,6 +293,7 @@ def find_settlement_gaps(
                     "status": row["status"],
                     "balance_kzt": round(bal, 2),
                     "event_date": event_date,
+                    "event_date_source_column": date_col,
                 }
             )
 
@@ -285,13 +313,38 @@ def reconcile_on_delivery_settlement(
     run_id: str | None = None,
     expected_pre_sha256: str | None = None,
     backup_dir: Path | None = None,
+    order_id_allowlist: set[str] | None = None,
+    expected_candidate_count: int | None = None,
 ) -> dict[str, Any]:
+    order_allowlist = _normalize_order_id_allowlist(order_id_allowlist)
+    if apply:
+        if order_allowlist is None:
+            raise RuntimeError("--order-id-file is required for settlement apply")
+        if expected_candidate_count is None:
+            raise RuntimeError("--expected-candidate-count is required for settlement apply")
+        if not expected_pre_sha256:
+            raise RuntimeError("--expected-pre-sha256 is required for every settlement apply")
+        if int(expected_candidate_count) != len(order_allowlist):
+            raise RuntimeError(
+                "settlement allowlist/count mismatch: "
+                f"allowlist={len(order_allowlist)} expected={int(expected_candidate_count)}"
+            )
     gaps = find_settlement_gaps(
         db_path=db_path,
         since=since,
         until=until,
         tolerance_kzt=tolerance_kzt,
+        order_id_allowlist=order_allowlist,
     )
+
+    if expected_candidate_count is not None:
+        if int(expected_candidate_count) < 0:
+            raise RuntimeError("expected candidate count must be nonnegative")
+        if len(gaps) != int(expected_candidate_count):
+            raise RuntimeError(
+                "settlement candidate count mismatch: "
+                f"expected {int(expected_candidate_count)}, observed {len(gaps)}"
+            )
 
     events: list[dict[str, Any]] = []
     run = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -338,8 +391,13 @@ def reconcile_on_delivery_settlement(
 
         new_events = [e for e in events if e["event_hash"] not in existing]
         if apply:
+            if len(new_events) != int(expected_candidate_count):
+                raise RuntimeError(
+                    "new settlement event count mismatch: "
+                    f"expected {int(expected_candidate_count)}, observed {len(new_events)}"
+                )
             for event in new_events:
-                conn.execute(
+                cur = conn.execute(
                     """
                     INSERT OR IGNORE INTO fact_cashflow_events (
                         event_date, event_type, account, amount_kzt, store_code, sku_key, sku_id,
@@ -362,11 +420,21 @@ def reconcile_on_delivery_settlement(
                         event["event_hash"],
                     ),
                 )
+                inserted += int(cur.rowcount or 0)
+            if inserted != int(expected_candidate_count):
+                conn.rollback()
+                raise RuntimeError(
+                    "inserted settlement event count mismatch: "
+                    f"expected {int(expected_candidate_count)}, observed {inserted}"
+                )
             conn.commit()
-            inserted = len(new_events)
 
     return {
         "candidates": len(events),
+        "candidate_order_ids": [str(event["ref_id"]) for event in events],
+        "event_date_source_columns": sorted(
+            {str(gap.get("event_date_source_column") or "") for gap in gaps}
+        ),
         "inserted": inserted,
         "apply": bool(apply),
         "run_id": run,
@@ -382,6 +450,8 @@ def main() -> int:
     parser.add_argument("--tolerance-kzt", type=float, default=1.0)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--expected-pre-sha256", type=str, default=None)
+    parser.add_argument("--order-id-file", type=Path, default=None)
+    parser.add_argument("--expected-candidate-count", type=int, default=None)
     parser.add_argument("--backup-dir", type=Path, default=None)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
@@ -395,6 +465,8 @@ def main() -> int:
         run_id=args.run_id,
         expected_pre_sha256=args.expected_pre_sha256,
         backup_dir=args.backup_dir,
+        order_id_allowlist=_read_order_id_file(args.order_id_file) if args.order_id_file else None,
+        expected_candidate_count=args.expected_candidate_count,
     )
     print(f"candidates={result['candidates']}")
     print(f"inserted={result['inserted']}")

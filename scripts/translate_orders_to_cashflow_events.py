@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -22,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.backup_db import backup_database  # noqa: E402
 from core.db.queries import get_cutoff_date_almaty
-from core.config.business_params import get_supplier_fx_rates, get_vat_rate
+from core.config.business_params import get_supplier_fx_rates
 from core.calc.economics import calc_delivery_fee, calc_net_rev, calc_cogs
 from core.integrations.kaspi_order_stage import (
     StageCode,
@@ -139,7 +140,35 @@ def _prepare_cashflow_apply_guard(
         "production_apply": production_apply,
         "pre_sha256": _sha256_file(db_path),
     }
+    pre_sha256 = str(metadata["pre_sha256"])
+    if expected_pre_sha256 and pre_sha256 != expected_pre_sha256:
+        raise RuntimeError(
+            "DB SHA mismatch before cashflow apply: "
+            f"expected {expected_pre_sha256}, observed {pre_sha256}"
+        )
     if not production_apply:
+        if expected_pre_sha256:
+            metadata["expected_pre_sha256"] = expected_pre_sha256
+        if backup_dir is not None:
+            pre_integrity = _sqlite_integrity_check(db_path)
+            if pre_integrity.lower() != "ok":
+                raise RuntimeError(
+                    f"copied DB integrity_check failed before cashflow apply: {pre_integrity}"
+                )
+            backup_path = backup_database(db_path, backup_dir, compress=False)
+            backup_integrity = _sqlite_integrity_check(backup_path)
+            if backup_integrity.lower() != "ok":
+                raise RuntimeError(
+                    f"cashflow copied backup integrity_check failed: {backup_integrity}"
+                )
+            metadata.update(
+                {
+                    "backup_path": str(backup_path),
+                    "backup_sha256": _sha256_file(backup_path),
+                    "pre_integrity_check": pre_integrity,
+                    "backup_integrity_check": backup_integrity,
+                }
+            )
         return metadata
 
     if os.environ.get(PROD_WRITE_ENV_GATE) != "1":
@@ -153,13 +182,6 @@ def _prepare_cashflow_apply_guard(
     pre_integrity = _sqlite_integrity_check(db_path)
     if pre_integrity.lower() != "ok":
         raise RuntimeError(f"production DB integrity_check failed before cashflow apply: {pre_integrity}")
-    pre_sha256 = str(metadata["pre_sha256"])
-    if pre_sha256 != expected_pre_sha256:
-        raise RuntimeError(
-            "production DB SHA mismatch before cashflow apply: "
-            f"expected {expected_pre_sha256}, observed {pre_sha256}"
-        )
-
     backup_path = backup_database(db_path, backup_dir, compress=False)
     backup_integrity = _sqlite_integrity_check(backup_path)
     if backup_integrity.lower() != "ok":
@@ -197,9 +219,10 @@ def _is_weak_sku_identity(sku_key: str, sku_id: str) -> bool:
 
 
 def _is_recovered_blank_order_entry(line: dict) -> bool:
+    ref_id = str(line.get("line_ref_id") or "")
     return (
         str(line.get("line_ref_type") or "").strip().upper() == "ORDER_ENTRY"
-        and str(line.get("line_ref_id") or "").startswith("RECOV-CURRENT_CRM-")
+        and ref_id.startswith(("RECOV-CURRENT_CRM-", "RECOV-WORKBOOK-"))
         and not str(line.get("sku_key") or "").strip()
         and not str(line.get("sku_id") or "").strip()
     )
@@ -304,6 +327,110 @@ def _load_dim_sku_costs(conn: sqlite3.Connection) -> dict[str, dict]:
     }
 
 
+def _load_article_identity_resolution(
+    conn: sqlite3.Connection,
+) -> tuple[
+    dict[tuple[str, str], tuple[str, str]],
+    set[tuple[str, str]],
+]:
+    if not _table_exists(conn, "dim_kaspi_article_map"):
+        return {}, set()
+    columns = _columns(conn, "dim_kaspi_article_map")
+    required = {"store_code", "kaspi_article", "sku_key"}
+    if not required.issubset(columns):
+        return {}, set()
+    active_filter = "AND COALESCE(active_flag, 1) = 1" if "active_flag" in columns else ""
+    rows = conn.execute(
+        f"""
+        SELECT store_code, kaspi_article, sku_key, sku_id
+        FROM dim_kaspi_article_map
+        WHERE COALESCE(TRIM(store_code), '') <> ''
+          AND COALESCE(TRIM(kaspi_article), '') <> ''
+          AND COALESCE(TRIM(sku_key), '') <> ''
+          {active_filter}
+        """
+    ).fetchall()
+    resolved: dict[tuple[str, str], tuple[str, str]] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (
+            str(row["store_code"] or "").strip().upper(),
+            str(row["kaspi_article"] or "").strip(),
+        )
+        value = (
+            str(row["sku_key"] or "").strip(),
+            str(row["sku_id"] or "").strip(),
+        )
+        if key in ambiguous:
+            continue
+        if key in resolved and resolved[key] != value:
+            resolved.pop(key, None)
+            ambiguous.add(key)
+            continue
+        resolved[key] = value
+    return resolved, ambiguous
+
+
+def _load_order_seller_delivery_fees(
+    conn: sqlite3.Connection,
+) -> tuple[dict[tuple[str, str], float], set[tuple[str, str]]]:
+    if not _table_exists(conn, "fact_orders_kaspi"):
+        return {}, set()
+    columns = _columns(conn, "fact_orders_kaspi")
+    required = {"order_id", "store_code", "delivery_cost_for_seller"}
+    if not required.issubset(columns):
+        return {}, set()
+    rows = conn.execute(
+        """
+        SELECT order_id, store_code, delivery_cost_for_seller
+        FROM fact_orders_kaspi
+        WHERE COALESCE(TRIM(order_id), '') <> ''
+          AND COALESCE(TRIM(store_code), '') <> ''
+          AND delivery_cost_for_seller IS NOT NULL
+        """
+    ).fetchall()
+    values_by_order: dict[tuple[str, str], set[float]] = {}
+    for row in rows:
+        key = (
+            str(row["order_id"] or "").strip(),
+            str(row["store_code"] or "").strip().upper(),
+        )
+        values_by_order.setdefault(key, set()).add(round(float(row["delivery_cost_for_seller"]), 6))
+    resolved: dict[tuple[str, str], float] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    for key, values in values_by_order.items():
+        if len(values) == 1:
+            resolved[key] = next(iter(values))
+        elif values:
+            ambiguous.add(key)
+    return resolved, ambiguous
+
+
+def _line_gross_total(line: dict) -> float:
+    quantity = float(line.get("quantity") or 0.0)
+    total = float(line.get("total_price_kzt") or 0.0)
+    if total > 0:
+        return total
+    return max(0.0, float(line.get("unit_price_kzt") or 0.0) * quantity)
+
+
+def _allocate_seller_delivery_fee(lines: list[dict], seller_fee_total: float | None) -> None:
+    if seller_fee_total is None or not lines:
+        return
+    gross_values = [_line_gross_total(line) for line in lines]
+    gross_total = sum(gross_values)
+    if gross_total <= 0:
+        return
+    allocated = 0.0
+    for index, (line, gross) in enumerate(zip(lines, gross_values)):
+        if index == len(lines) - 1:
+            share = round(float(seller_fee_total) - allocated, 2)
+        else:
+            share = round(float(seller_fee_total) * gross / gross_total, 2)
+            allocated = round(allocated + share, 2)
+        line["seller_delivery_cost_total_kzt"] = share
+
+
 def _load_order_entries(conn: sqlite3.Connection) -> dict[tuple[str, str], list[dict]]:
     if not _table_exists(conn, "fact_order_entries_kaspi"):
         return {}
@@ -320,24 +447,14 @@ def _load_order_entries(conn: sqlite3.Connection) -> dict[tuple[str, str], list[
             """
         ).fetchall()
 
-    article_map: dict[tuple[str, str], tuple[str, str]] = {}
+    article_map, ambiguous_article_keys = _load_article_identity_resolution(conn)
+    seller_delivery_fees, ambiguous_seller_fee_keys = _load_order_seller_delivery_fees(conn)
     name_map: dict[tuple[str, str], tuple[str, str]] = {}
-    ambiguous_article: set[tuple[str, str]] = set()
     ambiguous_name: set[tuple[str, str]] = set()
     for row in map_rows:
         store = str(row["store_code"] or "").strip()
-        article = str(row["kaspi_article"] or "").strip()
         offer_name = str(row["kaspi_offer_name"] or "").strip()
         value = (str(row["sku_key"]), str(row["sku_id"]))
-        if store and article:
-            key = (store, article)
-            if key in ambiguous_article:
-                pass
-            elif key in article_map and article_map[key] != value:
-                ambiguous_article.add(key)
-                article_map.pop(key, None)
-            else:
-                article_map[key] = value
         if store and offer_name:
             key = (store, offer_name)
             if key in ambiguous_name:
@@ -411,14 +528,20 @@ def _load_order_entries(conn: sqlite3.Connection) -> dict[tuple[str, str], list[
             continue
         sku_key = None
         sku_id = None
+        article_identity_ambiguous = False
         for candidate in _offer_candidates(row_dict.get("offer_id")):
-            mapped = article_map.get((store_code, candidate))
-            if mapped:
-                sku_key, sku_id = mapped
+            article_key = (store_code, candidate)
+            if article_key in ambiguous_article_keys:
+                article_identity_ambiguous = True
                 break
-        if (not sku_key or not sku_id) and row_dict.get("raw_json"):
+            mapped = article_map.get(article_key)
+            if mapped:
+                sku_key, mapped_sku_id = mapped
+                sku_id = mapped_sku_id or candidate
+                break
+        if not article_identity_ambiguous and (not sku_key or not sku_id) and row_dict.get("raw_json"):
             sku_key, sku_id = _extract_sku_from_raw_json(row_dict.get("raw_json"))
-        if (not sku_key or not sku_id) and row_dict.get("raw_json"):
+        if not article_identity_ambiguous and (not sku_key or not sku_id) and row_dict.get("raw_json"):
             offer_name = _offer_name_from_raw(row_dict.get("raw_json"))
             if offer_name:
                 mapped = name_map.get((store_code, offer_name))
@@ -436,8 +559,12 @@ def _load_order_entries(conn: sqlite3.Connection) -> dict[tuple[str, str], list[
                 "unit_price_kzt": row_dict.get("unit_price_kzt"),
                 "total_price_kzt": row_dict.get("total_price_kzt"),
                 "delivery_cost_kzt": row_dict.get("delivery_cost_kzt"),
+                "article_identity_ambiguous": article_identity_ambiguous,
+                "seller_delivery_cost_ambiguous": (order_id, store_code) in ambiguous_seller_fee_keys,
             }
         )
+    for order_key, lines in entries_by_order.items():
+        _allocate_seller_delivery_fee(lines, seller_delivery_fees.get(order_key))
     return entries_by_order
 
 
@@ -488,7 +615,6 @@ def _load_fact_order_line_fallback(conn: sqlite3.Connection) -> dict[tuple[str, 
         "quantity",
         "unit_price_kzt",
         "delivery_cost_for_seller",
-        "delivery_cost",
     ]
     select_cols = [col for col in wanted if col in cols]
     if not {"order_id", "store_code", "quantity", "unit_price_kzt"}.issubset(select_cols):
@@ -506,6 +632,7 @@ def _load_fact_order_line_fallback(conn: sqlite3.Connection) -> dict[tuple[str, 
         """
     ).fetchall()
     lines_by_order: dict[tuple[str, str], list[dict]] = {}
+    seller_delivery_fees, ambiguous_seller_fee_keys = _load_order_seller_delivery_fees(conn)
     seen_sku: set[tuple[str, str, str]] = set()
     seen_header: set[tuple[str, str, float, float]] = set()
     for row in rows:
@@ -515,10 +642,8 @@ def _load_fact_order_line_fallback(conn: sqlite3.Connection) -> dict[tuple[str, 
         sku_key = str(row_dict.get("sku_key") or "").strip()
         sku_id = str(row_dict.get("sku_id") or "").strip()
         qty = float(row_dict.get("quantity") or 0.0)
-        unit = float(row_dict.get("unit_price_kzt") or 0.0)
-        delivery_cost = row_dict.get("delivery_cost_for_seller")
-        if delivery_cost is None:
-            delivery_cost = row_dict.get("delivery_cost")
+        order_total = float(row_dict.get("unit_price_kzt") or 0.0)
+        unit = order_total / qty if qty > 0 else 0.0
         if sku_key and sku_id:
             key = (order_id, store_code, sku_id)
             if key in seen_sku:
@@ -539,8 +664,9 @@ def _load_fact_order_line_fallback(conn: sqlite3.Connection) -> dict[tuple[str, 
                 "sku_id": sku_id,
                 "quantity": qty,
                 "unit_price_kzt": unit,
-                "total_price_kzt": None,
-                "delivery_cost_kzt": delivery_cost,
+                "total_price_kzt": order_total,
+                "seller_delivery_cost_total_kzt": seller_delivery_fees.get((order_id, store_code)),
+                "seller_delivery_cost_ambiguous": (order_id, store_code) in ambiguous_seller_fee_keys,
             }
         )
     return lines_by_order
@@ -601,13 +727,17 @@ def _sell_price_for_line(line: dict) -> float:
 
 
 def _net_cash_amount_for_line(line: dict, event_date: str, weights: dict[str, float]) -> float:
+    if line.get("seller_delivery_cost_ambiguous"):
+        raise RuntimeError("ambiguous seller delivery fee for order line")
     qty = float(line.get("quantity") or 0.0)
     sell_price = _sell_price_for_line(line)
     sku_key = line.get("sku_key")
     weight = weights.get(sku_key or "", 0.0)
-    delivery_fee = line.get("delivery_cost_kzt")
-    if delivery_fee is None:
+    seller_delivery_total = line.get("seller_delivery_cost_total_kzt")
+    if seller_delivery_total is None:
         delivery_fee = calc_delivery_fee(sell_price, weight_kg=weight, delivery_type="city")
+    else:
+        delivery_fee = float(seller_delivery_total or 0.0) / qty if qty > 0 else 0.0
     net_rev_unit = calc_net_rev(
         sell_price,
         delivery_fee=float(delivery_fee or 0.0),
@@ -656,6 +786,7 @@ def _cash_matches_line(
     cash_rows: list[dict],
     *,
     order_id: str,
+    store_code: str,
     line: dict,
     event_date: str | None,
     positive: bool,
@@ -663,6 +794,7 @@ def _cash_matches_line(
 ) -> list[dict]:
     ref_type, ref_id = _line_ref(line, order_id)
     sku_id = str(line.get("sku_id") or "").strip()
+    expected_store = str(store_code or "").strip().upper()
     exact = []
     sku_fallback = []
     general_fallback = []
@@ -673,6 +805,9 @@ def _cash_matches_line(
         if not positive and amount >= 0:
             continue
         if "RECEIVABLE" in str(row.get("account") or "").upper():
+            continue
+        row_store = str(row.get("store_code") or "").strip().upper()
+        if expected_store and row_store != expected_store:
             continue
         if event_date and _parse_date(row.get("event_date")) != event_date:
             continue
@@ -785,6 +920,8 @@ def _build_stagecode_d1_events(
     sales_fact_fallback: dict[tuple[str, str], list[dict]],
     fact_order_fallback: dict[tuple[str, str], list[dict]],
     order_id_filter: set[str] | None = None,
+    blocked_order_keys: set[tuple[str, str]] | None = None,
+    identity_errors: list[str] | None = None,
 ) -> tuple[list[dict], Counter]:
     stage_events = _stage_events_by_order(conn, since, until)
     cash_rows = _load_existing_cash_rows(conn)
@@ -793,6 +930,11 @@ def _build_stagecode_d1_events(
 
     for (order_id, store_code), stage_meta in stage_events.items():
         if order_id_filter is not None and order_id not in order_id_filter:
+            continue
+        if blocked_order_keys and (order_id, store_code) in blocked_order_keys:
+            if identity_errors is not None:
+                identity_errors.append(f"{order_id}:{store_code}:ambiguous_exact_article")
+            counts["ambiguous_article_identity"] += 1
             continue
         lines = (
             entries_by_order.get((order_id, store_code))
@@ -806,6 +948,11 @@ def _build_stagecode_d1_events(
         single_line_order = len(lines) == 1
         delivered_date = stage_meta["delivered_date"]
         for line in lines:
+            if line.get("article_identity_ambiguous"):
+                if identity_errors is not None:
+                    identity_errors.append(f"{order_id}:{store_code}:ambiguous_exact_article")
+                counts["ambiguous_article_identity"] += 1
+                continue
             qty = float(line.get("quantity") or 0.0)
             if qty <= 0 or _sell_price_for_line(line) <= 0:
                 counts["missing_amount_evidence"] += 1
@@ -813,6 +960,7 @@ def _build_stagecode_d1_events(
             existing_positive = _cash_matches_line(
                 cash_rows,
                 order_id=order_id,
+                store_code=store_code,
                 line=line,
                 event_date=delivered_date,
                 positive=True,
@@ -850,6 +998,7 @@ def _build_stagecode_d1_events(
             existing_negative = _cash_matches_line(
                 cash_rows,
                 order_id=order_id,
+                store_code=store_code,
                 line=line,
                 event_date=terminal_date,
                 positive=False,
@@ -988,6 +1137,87 @@ def _load_on_delivery_balances(conn: sqlite3.Connection) -> dict[tuple[str, str]
     }
 
 
+def _load_existing_inventory_settlements(
+    conn: sqlite3.Connection,
+) -> dict[tuple[str, str], list[dict[str, object]]]:
+    if not _table_exists(conn, "fact_cashflow_events"):
+        return {}
+    rows = conn.execute(
+        """
+        SELECT rowid AS settlement_event_id, ref_id, sku_id, event_date,
+               amount_kzt, event_hash, source, run_id
+        FROM fact_cashflow_events
+        WHERE ref_type = 'ORDER'
+          AND event_type = 'INVENTORY_SETTLEMENT'
+          AND account = 'INVENTORY_ON_DELIVERY_COST'
+          AND ABS(amount_kzt) > 0
+        ORDER BY rowid
+        """
+    ).fetchall()
+    settlements: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for row in rows:
+        if row[1] is None:
+            continue
+        key = (str(row[1]), str(row[2]) if row[2] is not None else "")
+        settlements.setdefault(key, []).append(
+            {
+                "event_id": int(row[0]),
+                "event_date": str(row[3] or ""),
+                "amount_kzt": float(row[4] or 0.0),
+                "event_hash": str(row[5] or ""),
+                "source": str(row[6] or ""),
+                "run_id": str(row[7] or ""),
+            }
+        )
+    return settlements
+
+
+def _exact_inventory_settlement_for_reversal(
+    settlements: dict[tuple[str, str], list[dict[str, object]]],
+    *,
+    order_id: str,
+    sku_id: str,
+    cost_line: float,
+    canonical_event_date: str,
+) -> dict[str, object]:
+    rows = settlements.get((order_id, sku_id), [])
+    if len(rows) != 1:
+        raise RuntimeError(
+            "Canonical completed-order COGS requires exactly one prior "
+            f"INVENTORY_SETTLEMENT for {order_id}:{sku_id}; found {len(rows)}."
+        )
+    settlement = rows[0]
+    amount = float(settlement["amount_kzt"])
+    event_hash = str(settlement["event_hash"])
+    event_date = str(settlement["event_date"])
+    if amount >= 0 or abs(amount + abs(cost_line)) > 0.01:
+        raise RuntimeError(
+            "Prior INVENTORY_SETTLEMENT amount does not exactly match canonical "
+            f"cost for {order_id}:{sku_id}: settlement={amount:.2f}, "
+            f"cost={abs(cost_line):.2f}."
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", event_hash, re.IGNORECASE):
+        raise RuntimeError(
+            f"Prior INVENTORY_SETTLEMENT has an invalid event hash for {order_id}:{sku_id}."
+        )
+    if not str(settlement["source"]).strip() or not str(settlement["run_id"]).strip():
+        raise RuntimeError(
+            f"Prior INVENTORY_SETTLEMENT lacks source/run identity for {order_id}:{sku_id}."
+        )
+    parsed_settlement_date = _parse_date(event_date)
+    parsed_canonical_date = _parse_date(canonical_event_date)
+    if (
+        not parsed_settlement_date
+        or not parsed_canonical_date
+        or parsed_settlement_date > parsed_canonical_date
+    ):
+        raise RuntimeError(
+            "Prior INVENTORY_SETTLEMENT is undated or later than canonical completion "
+            f"for {order_id}:{sku_id}."
+        )
+    return settlement
+
+
 def _has_existing(existing: set[tuple[str, str]], order_id: str, order_sku_id: str) -> bool:
     if (order_id, order_sku_id) in existing:
         return True
@@ -1055,6 +1285,8 @@ def translate_orders(
 
         weights = _load_dim_sku_weights(conn)
         dim_costs = _load_dim_sku_costs(conn)
+        article_identity_map, ambiguous_article_keys = _load_article_identity_resolution(conn)
+        seller_delivery_fees, ambiguous_seller_fee_keys = _load_order_seller_delivery_fees(conn)
         entries_by_order = _load_order_entries(conn)
         sales_fact_fallback = _load_sales_fact_fallback(conn)
         fact_order_fallback = _load_fact_order_line_fallback(conn)
@@ -1066,6 +1298,7 @@ def translate_orders(
         existing_cogs_dates = _load_existing_cogs_dates(conn)
         existing_move_dates = _load_existing_move_dates(conn)
         on_delivery_balances = _load_on_delivery_balances(conn)
+        existing_inventory_settlements = _load_existing_inventory_settlements(conn)
         existing_cash_order_ids = {order_id for order_id, _ in existing_cash}
         existing_refund_order_ids = {order_id for order_id, _ in existing_refunds}
         existing_cogs_order_ids = {order_id for order_id, _ in existing_cogs_dates}
@@ -1182,10 +1415,27 @@ def translate_orders(
         events = []
         missing_sku = []
         missing_cost = []
+        ambiguous_article_identity = []
+        exact_article_identity_overrides = 0
         counts = {"completed": 0, "cancelled": 0, "on_delivery": 0, "ignored": 0}
         stagecode_events: list[dict] = []
         stagecode_counts: Counter = Counter()
         if status_filter is None:
+            blocked_order_keys = {
+                (
+                    str(row["order_id"] or "").strip(),
+                    str(row["store_code"] or "").strip().upper(),
+                )
+                for row in rows
+                if str(row["order_id"] or "").strip()
+                and str(row["store_code"] or "").strip()
+                and "kaspi_article" in row.keys()
+                and (
+                    str(row["store_code"] or "").strip().upper(),
+                    str(row["kaspi_article"] or "").strip(),
+                )
+                in ambiguous_article_keys
+            }
             stagecode_events, stagecode_counts = _build_stagecode_d1_events(
                 conn,
                 since=since,
@@ -1196,6 +1446,8 @@ def translate_orders(
                 sales_fact_fallback=sales_fact_fallback,
                 fact_order_fallback=fact_order_fallback,
                 order_id_filter=order_id_filter,
+                blocked_order_keys=blocked_order_keys,
+                identity_errors=ambiguous_article_identity,
             )
         events.extend(stagecode_events)
         for event in stagecode_events:
@@ -1222,8 +1474,10 @@ def translate_orders(
         # INVENTORY_ON_DELIVERY_COST balance is non-zero, add a balancing COGS entry.
         # Restrict corrections to cogs dates inside the requested window.
         stagecode_d1_order_pairs = set()
+        stagecode_d1_order_meta: dict[tuple[str, str], dict[str, str]] = {}
         if status_filter is None:
-            stagecode_d1_order_pairs = set(_stage_events_by_order(conn, since, until).keys())
+            stagecode_d1_order_meta = _stage_events_by_order(conn, since, until)
+            stagecode_d1_order_pairs = set(stagecode_d1_order_meta.keys())
             for (order_id, order_sku_id), row_meta in resolved_completed_rows_by_key.items():
                 if (order_id, str(row_meta["store_code"] or "").strip().upper()) in stagecode_d1_order_pairs:
                     continue
@@ -1285,11 +1539,37 @@ def translate_orders(
             order_id = str(row["order_id"]) if row["order_id"] is not None else ""
             store_code = str(row["store_code"] or "").strip().upper()
             store_code_norm = str(store_code or "").strip().upper()
-            if status in {"COMPLETED", "CANCELLED"} and (order_id, store_code_norm) in stagecode_d1_order_pairs:
+            stage_key = (order_id, store_code_norm)
+            stage_history_handles_row = (
+                status == "COMPLETED" and stage_key in stagecode_d1_order_pairs
+            ) or (
+                status == "CANCELLED"
+                and bool(stagecode_d1_order_meta.get(stage_key, {}).get("terminal_date"))
+            )
+            if stage_history_handles_row:
                 counts["ignored"] += 1
                 continue
             row_sku_id = str(row["sku_id"] or "").strip()
             row_sku_key = str(row["sku_key"] or "").strip()
+            row_article = (
+                str(row["kaspi_article"] or "").strip()
+                if "kaspi_article" in row.keys()
+                else ""
+            )
+            article_key = (store_code_norm, row_article)
+            if row_article and article_key in ambiguous_article_keys:
+                marker = f"{order_id}:{store_code}:ambiguous_exact_article"
+                if marker not in ambiguous_article_identity:
+                    ambiguous_article_identity.append(marker)
+                counts["ignored"] += 1
+                continue
+            mapped_identity = article_identity_map.get(article_key)
+            if mapped_identity:
+                mapped_sku_key, mapped_sku_id = mapped_identity
+                resolved_sku_id = mapped_sku_id or row_article
+                if (mapped_sku_key, resolved_sku_id) != (row_sku_key, row_sku_id):
+                    exact_article_identity_overrides += 1
+                row_sku_key, row_sku_id = mapped_sku_key, resolved_sku_id
             if store_code_norm == "UNKNOWN":
                 if (
                     (row_sku_id and (order_id, row_sku_id) in non_unknown_row_tokens)
@@ -1305,14 +1585,24 @@ def translate_orders(
                 counts["ignored"] += 1
                 continue
             order_lines = []
-            if row["sku_key"] and row["sku_id"]:
+            if row_sku_key and row_sku_id:
+                row_quantity = float(row["quantity"] or 0.0)
+                row_order_total = float(row["unit_price_kzt"] or 0.0)
                 order_lines.append(
                     {
-                        "sku_key": row["sku_key"],
-                        "sku_id": row["sku_id"],
-                        "quantity": float(row["quantity"] or 0.0),
-                        "unit_price_kzt": row["unit_price_kzt"],
-                        "total_price_kzt": None,
+                        "sku_key": row_sku_key,
+                        "sku_id": row_sku_id,
+                        "quantity": row_quantity,
+                        "unit_price_kzt": row_order_total / row_quantity if row_quantity > 0 else 0.0,
+                        "total_price_kzt": row_order_total,
+                        "seller_delivery_cost_total_kzt": seller_delivery_fees.get(
+                            (order_id, store_code_norm)
+                        ),
+                        "seller_delivery_cost_ambiguous": (
+                            order_id,
+                            store_code_norm,
+                        )
+                        in ambiguous_seller_fee_keys,
                     }
                 )
             else:
@@ -1351,7 +1641,118 @@ def translate_orders(
                     counts["ignored"] += 1
                     continue
 
+            if status == "CANCELLED":
+                cash_scope_lines = (
+                    entries_by_order.get((order_id, str(store_code))) or order_lines
+                )
+                cash_scope_single_line = len(cash_scope_lines) == 1
+                for cash_line in cash_scope_lines:
+                    current_positive = _cash_matches_line(
+                        cash_rows_for_line_matching,
+                        order_id=order_id,
+                        store_code=store_code,
+                        line=cash_line,
+                        event_date=None,
+                        positive=True,
+                        single_line_order=cash_scope_single_line,
+                    )
+                    current_negative = _cash_matches_line(
+                        cash_rows_for_line_matching,
+                        order_id=order_id,
+                        store_code=store_code,
+                        line=cash_line,
+                        event_date=None,
+                        positive=False,
+                        single_line_order=cash_scope_single_line,
+                    )
+                    if len(current_positive) > 1:
+                        raise RuntimeError(
+                            "Ambiguous exact positive cash rows for current returned order "
+                            f"{order_id}:{store_code}:{_line_ref(cash_line, order_id)[1]}"
+                        )
+                    cash_line_sku = str(cash_line.get("sku_id") or "").strip()
+                    if current_positive:
+                        positive_row = current_positive[0]
+                        cash_identity_sku = str(
+                            cash_line_sku or positive_row.get("sku_id") or ""
+                        ).strip()
+                        existing_cash.add((order_id, cash_identity_sku))
+                        existing_cash_order_ids.add(order_id)
+                        if (
+                            str(positive_row.get("ref_type") or "").strip().upper()
+                            == "ORDER_ENTRY"
+                        ):
+                            order_entry_d1_cash_order_skus.add(
+                                (order_id, cash_identity_sku)
+                            )
+                    if current_negative:
+                        negative_row = current_negative[0]
+                        cash_identity_sku = str(
+                            cash_line_sku or negative_row.get("sku_id") or ""
+                        ).strip()
+                        existing_refunds.add((order_id, cash_identity_sku))
+                        existing_refund_order_ids.add(order_id)
+                    if current_positive and not current_negative:
+                        positive_row = current_positive[0]
+                        positive_ref_type = str(
+                            positive_row.get("ref_type") or "ORDER"
+                        ).strip().upper()
+                        positive_ref_id = str(positive_row.get("ref_id") or "").strip()
+                        if positive_ref_type not in {"ORDER", "ORDER_ENTRY"} or not positive_ref_id:
+                            raise RuntimeError(
+                                "Current returned-order cash reversal lacks an exact ORDER or "
+                                f"ORDER_ENTRY reference for {order_id}:{store_code}"
+                            )
+                        cash_identity_sku = str(
+                            cash_line_sku or positive_row.get("sku_id") or ""
+                        ).strip()
+                        cash_event = {
+                            "event_date": event_date,
+                            "event_type": "CASH_IN",
+                            "account": _cash_account(store_code),
+                            "amount_kzt": -abs(
+                                float(positive_row.get("amount_kzt") or 0.0)
+                            ),
+                            "store_code": store_code,
+                            "sku_key": str(
+                                cash_line.get("sku_key")
+                                or positive_row.get("sku_key")
+                                or ""
+                            ).strip(),
+                            "sku_id": cash_identity_sku,
+                            "ref_type": positive_ref_type,
+                            "ref_id": positive_ref_id,
+                            "source": "ORDER_MODELLED",
+                            "run_id": run_id,
+                            "notes": (
+                                "D1 cash reversal from current first-party return state; "
+                                f"order_id={order_id}"
+                            ),
+                        }
+                        if not any(
+                            _event_hash(cash_event) == _event_hash(existing)
+                            for existing in events
+                        ):
+                            events.append(cash_event)
+                            cash_rows_for_line_matching.append(cash_event)
+                            counts["current_status_reversal_candidates"] = (
+                                counts.get("current_status_reversal_candidates", 0) + 1
+                            )
+                        existing_refunds.add((order_id, cash_identity_sku))
+                        existing_refund_order_ids.add(order_id)
+
             for line in order_lines:
+                if line.get("article_identity_ambiguous"):
+                    marker = f"{order_id}:{store_code}:ambiguous_exact_article"
+                    if marker not in ambiguous_article_identity:
+                        ambiguous_article_identity.append(marker)
+                    counts["ignored"] += 1
+                    continue
+                if line.get("seller_delivery_cost_ambiguous"):
+                    raise RuntimeError(
+                        f"Ambiguous seller delivery fee for {order_id}:{store_code}; "
+                        "conflicting fact_orders_kaspi header values must not be guessed."
+                    )
                 qty = float(line.get("quantity") or 0.0)
                 if qty <= 0:
                     counts["ignored"] += 1
@@ -1365,6 +1766,7 @@ def translate_orders(
                         existing_positive = _cash_matches_line(
                             cash_rows_for_line_matching,
                             order_id=order_id,
+                            store_code=store_code,
                             line=line,
                             event_date=event_date,
                             positive=True,
@@ -1394,6 +1796,7 @@ def translate_orders(
                             existing_negative = _cash_matches_line(
                                 cash_rows_for_line_matching,
                                 order_id=order_id,
+                                store_code=store_code,
                                 line=line,
                                 event_date=event_date,
                                 positive=False,
@@ -1457,16 +1860,16 @@ def translate_orders(
                 sell_price = float(sell_price or 0.0)
 
                 weight = weights.get(sku_key or "", 0.0)
-                vat_rate = get_vat_rate(date.fromisoformat(event_date))
-                delivery_fee = calc_delivery_fee(sell_price, weight_kg=weight, delivery_type="city")
-                net_rev_unit = calc_net_rev(
-                    sell_price,
-                    delivery_fee=delivery_fee,
-                    weight_kg=weight,
-                    as_of_date=date.fromisoformat(event_date),
-                )
-                net_rev_line = round(net_rev_unit * qty, 2)
-                delivery_fee_line = round(float(delivery_fee or 0.0) * qty, 2)
+                net_rev_line = _net_cash_amount_for_line(line, event_date, weights)
+                seller_delivery_total = line.get("seller_delivery_cost_total_kzt")
+                if seller_delivery_total is None:
+                    delivery_fee_line = round(
+                        float(calc_delivery_fee(sell_price, weight_kg=weight, delivery_type="city") or 0.0)
+                        * qty,
+                        2,
+                    )
+                else:
+                    delivery_fee_line = round(float(seller_delivery_total or 0.0), 2)
                 unit_cost = _unit_cost_kzt_for_sku(sku_key, fx_rates, dim_costs)
                 if unit_cost <= 0:
                     missing_cost.append(f"{order_id}:{sku_key}")
@@ -1624,7 +2027,10 @@ def translate_orders(
                         continue
                     counts["completed"] += 1
                     if not _has_existing(existing_on_delivery, order_id, order_sku_id):
-                        backfill_date = _get_existing_date(existing_cogs_dates, order_id, order_sku_id) or event_date
+                        backfill_date = (
+                            _get_existing_date(existing_cogs_dates, order_id, order_sku_id)
+                            or event_date
+                        )
                         events.append(
                             {
                                 "event_date": backfill_date,
@@ -1643,9 +2049,49 @@ def translate_orders(
                                 "amount_kzt": abs(cost_line),
                                 **base_fields,
                                 "notes": "Backfill on-delivery at completion",
+                            }
+                        )
+                        existing_on_delivery.add(order_key)
+                        _apply_balance_delta(
+                            on_delivery_balances, order_id, order_sku_id, abs(cost_line)
+                        )
+                    else:
+                        on_delivery_balance = _get_existing_balance(
+                            on_delivery_balances, order_id, order_sku_id
+                        )
+                        if abs(on_delivery_balance - abs(cost_line)) <= 0.01:
+                            pass
+                        elif abs(on_delivery_balance) <= 0.01:
+                            settlement = _exact_inventory_settlement_for_reversal(
+                                existing_inventory_settlements,
+                                order_id=order_id,
+                                sku_id=order_sku_id,
+                                cost_line=cost_line,
+                                canonical_event_date=event_date,
+                            )
+                            events.append(
+                                {
+                                    "event_date": event_date,
+                                    "event_type": "INVENTORY_SETTLEMENT_REVERSAL",
+                                    "account": "INVENTORY_ON_DELIVERY_COST",
+                                    "amount_kzt": abs(cost_line),
+                                    **base_fields,
+                                    "notes": (
+                                        "Reverse surrogate settlement before canonical COGS; "
+                                        f"reverses_settlement_event_id={settlement['event_id']}; "
+                                        f"settlement_event_hash={settlement['event_hash']}"
+                                    ),
                                 }
                             )
-                        existing_on_delivery.add(order_key)
+                            _apply_balance_delta(
+                                on_delivery_balances, order_id, order_sku_id, abs(cost_line)
+                            )
+                        else:
+                            raise RuntimeError(
+                                "Canonical completed-order COGS found a nonzero, non-cost "
+                                f"on-delivery balance for {order_id}:{order_sku_id}: "
+                                f"balance={on_delivery_balance:.2f}, cost={abs(cost_line):.2f}."
+                            )
                     events.append(
                         {
                             "event_date": event_date,
@@ -1664,6 +2110,18 @@ def translate_orders(
                             **base_fields,
                         }
                     )
+                    _apply_balance_delta(
+                        on_delivery_balances, order_id, order_sku_id, -abs(cost_line)
+                    )
+                    final_on_delivery_balance = _get_existing_balance(
+                        on_delivery_balances, order_id, order_sku_id
+                    )
+                    if abs(final_on_delivery_balance) > 0.01:
+                        raise RuntimeError(
+                            "Canonical completed-order replay did not close on-delivery "
+                            f"balance for {order_id}:{order_sku_id}: "
+                            f"remaining={final_on_delivery_balance:.2f}."
+                        )
                     existing_cogs_dates[order_key] = event_date
                     existing_cash.add(order_key)
                 elif status == "CANCELLED":
@@ -1756,6 +2214,15 @@ def translate_orders(
                     counts["ignored"] += 1
                     continue
 
+        if ambiguous_article_identity:
+            sample = ", ".join(ambiguous_article_identity[:5])
+            raise RuntimeError(
+                "Ambiguous exact article identity for "
+                f"{len(ambiguous_article_identity)} order lines (sample: {sample}). "
+                "Conflicting active dim_kaspi_article_map rows must be quarantined; "
+                "raw, name, JSON, or costed aliases are not valid fallbacks."
+            )
+
         if missing_sku or missing_cost:
             messages = []
             if missing_sku:
@@ -1808,9 +2275,14 @@ def translate_orders(
             report_lines.append(f"Only cashflow status: {status_filter}")
             report_lines.append(f"Rows filtered by cashflow status: {status_filtered_out}")
         report_lines.append(f"Orders scanned: {len(rows)}")
+        report_lines.append(f"Exact article identity overrides: {exact_article_identity_overrides}")
         report_lines.append(f"StageCode D1 cash-in candidates: {stagecode_counts.get('cash_in_candidates', 0)}")
         report_lines.append(f"StageCode D1 existing cash-in lines: {stagecode_counts.get('cash_in_existing', 0)}")
         report_lines.append(f"StageCode D1 reversal candidates: {stagecode_counts.get('reversal_candidates', 0)}")
+        report_lines.append(
+            "Current-status D1 reversal candidates: "
+            f"{counts.get('current_status_reversal_candidates', 0)}"
+        )
         report_lines.append(f"StageCode D1 missing line evidence: {stagecode_counts.get('missing_line_evidence', 0)}")
         report_lines.append(f"StageCode D1 missing amount evidence: {stagecode_counts.get('missing_amount_evidence', 0)}")
         report_lines.append(f"Completed orders: {counts['completed']}")

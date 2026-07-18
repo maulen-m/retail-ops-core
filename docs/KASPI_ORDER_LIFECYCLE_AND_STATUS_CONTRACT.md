@@ -99,6 +99,11 @@ Recommended StageCodes (minimum set):
   - returnedToWarehouse flag may appear
 - Internal StageCodes:
   - CANCELLING → CANCELLED
+- `CANCELLING` with `returnedToWarehouse=false` is an expected inbound return,
+  not a physically present QC item. It may remain in the return/cancel backlog,
+  but must not enter the employee inspection queue until an exact readback proves
+  `returnedToWarehouse=true`. The inspection queue therefore contains only
+  warehouse-returned units; it never asks staff to find goods still at Kaspi.
 
 ### F) Pickup (самовывоз)
 - Buyer must pick up within 3 working days or the order is auto-cancelled.
@@ -118,6 +123,11 @@ Recommended StageCodes (minimum set):
 Cashflow implication:
 - Refund reserve should treat orders within the return window as exposure until the window ends (conservative scenario).
 - Delivery cost is treated as an operating cost (not negative COGS) per your contract.
+- Returns-economics validation must read the canonical sales-truth view when it
+  exists. A legacy `sales_fact_v2` projection is fallback-only when no canonical
+  view is available; it must never be unioned back into canonical results because
+  that can reintroduce rows already excluded by terminal cancellation/return
+  evidence.
 
 ## Implementation contract (for engineers/agents)
 
