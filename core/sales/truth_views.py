@@ -6,6 +6,7 @@ import sqlite3
 from datetime import date
 
 from core.config.business_params import get_supplier_fx_rates_from_conn
+from core.sales.publication_binding import publication_binding_schema_ready
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -87,6 +88,35 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         "fact_order_entry_header_only_source_gap_quarantine",
     )
     has_owner_cogs_override = _table_exists(conn, "fact_sales_owner_cogs_override")
+    binding_source_columns = {
+        "sale_id",
+        "order_id",
+        "order_date",
+        "store_code",
+        "sku_key",
+        "sku_id",
+        "my_size",
+        "quantity",
+        "sell_price_kzt",
+        "delivery_fee",
+        "cogs",
+        "net_rev",
+        "profit",
+        "status",
+        "return_flag",
+        "source_file",
+        "source_entry_id",
+        "kaspi_article",
+        "line_identity_key",
+    }
+    has_publication_binding = bool(
+        has_sales_v2
+        and has_workbook_anchor
+        and publication_binding_schema_ready(conn)
+        and binding_source_columns.issubset(
+            {str(row[1]) for row in conn.execute("PRAGMA table_info(sales_fact_v2)")}
+        )
+    )
     if not has_sales_v2 and not has_fact_sales:
         raise RuntimeError(
             "Missing internal staging sales tables: sales_fact_v2, fact_sales"
@@ -96,6 +126,8 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
     conn.execute("DROP VIEW IF EXISTS view_sales_line_reference")
     conn.execute("DROP VIEW IF EXISTS view_sales_daily_truth")
     conn.execute("DROP VIEW IF EXISTS view_sales_line_truth")
+    conn.execute("DROP VIEW IF EXISTS view_sales_publication_binding_validation")
+    conn.execute("DROP VIEW IF EXISTS view_sales_line_truth_unbound")
 
     cny_kzt, usd_kzt, dlv_rate_usd_kg = _resolve_fx_rates(conn)
 
@@ -136,7 +168,10 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
                 NULL AS profit_kzt,
                 CAST(COALESCE({ref_status}, 'DELIVERED') AS TEXT) AS status,
                 CAST(COALESCE({ref_return}, 0) AS INTEGER) AS return_flag,
-                'fact_sales_external_ref' AS source_table
+                'fact_sales_external_ref' AS source_table,
+                CAST(rowid AS TEXT) AS source_row_id,
+                NULL AS source_entry_id,
+                NULL AS source_line_identity_key
             FROM fact_sales_external_ref
             WHERE UPPER(COALESCE({ref_status}, 'DELIVERED')) IN ('DELIVERED', 'COMPLETED', 'ВЫДАН')
               AND COALESCE({ref_return}, 0) = 0
@@ -154,6 +189,17 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         v2_qty = "quantity" if _column_exists(conn, "sales_fact_v2", "quantity") else "0"
         v2_order_date = "order_date" if _column_exists(conn, "sales_fact_v2", "order_date") else "NULL"
         v2_sku_id = "sku_id" if _column_exists(conn, "sales_fact_v2", "sku_id") else "''"
+        v2_row_id = "sale_id" if _column_exists(conn, "sales_fact_v2", "sale_id") else "rowid"
+        v2_entry_id = (
+            "source_entry_id"
+            if _column_exists(conn, "sales_fact_v2", "source_entry_id")
+            else "NULL"
+        )
+        v2_line_key = (
+            "line_identity_key"
+            if _column_exists(conn, "sales_fact_v2", "line_identity_key")
+            else "NULL"
+        )
         v2_select = f"""
             SELECT
                 CAST(order_id AS TEXT) AS order_id,
@@ -168,7 +214,10 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
                 CAST(COALESCE({v2_profit}, COALESCE({v2_net}, 0) - COALESCE({v2_cogs}, 0)) AS REAL) AS profit_kzt,
                 CAST(COALESCE({v2_status}, '') AS TEXT) AS status,
                 CAST(COALESCE({v2_return}, 0) AS INTEGER) AS return_flag,
-                'sales_fact_v2' AS source_table
+                'sales_fact_v2' AS source_table,
+                CAST({v2_row_id} AS TEXT) AS source_row_id,
+                CAST({v2_entry_id} AS TEXT) AS source_entry_id,
+                CAST({v2_line_key} AS TEXT) AS source_line_identity_key
             FROM sales_fact_v2
             WHERE UPPER(COALESCE({v2_status}, 'DELIVERED')) = 'DELIVERED'
               AND COALESCE({v2_return}, 0) = 0
@@ -184,6 +233,17 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         fs_qty = "quantity" if _column_exists(conn, "fact_sales", "quantity") else "0"
         fs_order_date = "order_date" if _column_exists(conn, "fact_sales", "order_date") else "NULL"
         fs_sku_id = "sku_id" if _column_exists(conn, "fact_sales", "sku_id") else "''"
+        fs_row_id = "id" if _column_exists(conn, "fact_sales", "id") else "rowid"
+        fs_entry_id = (
+            "source_entry_id"
+            if _column_exists(conn, "fact_sales", "source_entry_id")
+            else "NULL"
+        )
+        fs_line_key = (
+            "line_identity_key"
+            if _column_exists(conn, "fact_sales", "line_identity_key")
+            else "NULL"
+        )
         fact_select = """
             SELECT
                 CAST(order_id AS TEXT) AS order_id,
@@ -198,7 +258,10 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
                 CAST(COALESCE({fs_profit}, COALESCE({fs_net}, 0) - COALESCE({fs_cogs}, 0)) AS REAL) AS profit_kzt,
                 'DELIVERED' AS status,
                 0 AS return_flag,
-                'fact_sales' AS source_table
+                'fact_sales' AS source_table,
+                CAST({fs_row_id} AS TEXT) AS source_row_id,
+                CAST({fs_entry_id} AS TEXT) AS source_entry_id,
+                CAST({fs_line_key} AS TEXT) AS source_line_identity_key
             FROM fact_sales
         """.format(
             fs_order_date=fs_order_date,
@@ -209,6 +272,9 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             fs_net=fs_net,
             fs_cogs=fs_cogs,
             fs_profit=fs_profit,
+            fs_row_id=fs_row_id,
+            fs_entry_id=fs_entry_id,
+            fs_line_key=fs_line_key,
         )
 
     ctes: list[str] = []
@@ -218,7 +284,8 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         ctes.append(
             "sales_v2 AS (SELECT NULL AS order_id, NULL AS sale_date, NULL AS store_code, NULL AS sku_key, "
             "NULL AS sku_id, NULL AS my_size, 0.0 AS units, 0.0 AS net_rev_kzt, 0.0 AS cogs_kzt, 0.0 AS profit_kzt, "
-            "NULL AS status, 0 AS return_flag, NULL AS source_table WHERE 0)"
+            "NULL AS status, 0 AS return_flag, NULL AS source_table, NULL AS source_row_id, "
+            "NULL AS source_entry_id, NULL AS source_line_identity_key WHERE 0)"
         )
     if fact_select:
         ctes.append(f"sales_fact AS ({fact_select})")
@@ -226,7 +293,8 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
         ctes.append(
             "sales_fact AS (SELECT NULL AS order_id, NULL AS sale_date, NULL AS store_code, NULL AS sku_key, "
             "NULL AS sku_id, NULL AS my_size, 0.0 AS units, 0.0 AS net_rev_kzt, 0.0 AS cogs_kzt, 0.0 AS profit_kzt, "
-            "NULL AS status, 0 AS return_flag, NULL AS source_table WHERE 0)"
+            "NULL AS status, 0 AS return_flag, NULL AS source_table, NULL AS source_row_id, "
+            "NULL AS source_entry_id, NULL AS source_line_identity_key WHERE 0)"
         )
     if has_sales_v2:
         v2_bounds_order_date = "order_date" if _column_exists(conn, "sales_fact_v2", "order_date") else "sale_date"
@@ -482,28 +550,53 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             )
             """
         )
-    ctes.append(
-        """
-        lifecycle_excluded_order_keys AS (
-            SELECT NULL AS order_id, NULL AS store_code WHERE 0
-        )
-        """
-    )
+    lifecycle_exclusion_selects: list[str] = []
     if _table_exists(conn, "fact_orders_kaspi") and _column_exists(conn, "fact_orders_kaspi", "internal_status"):
         lifecycle_store = (
             "store_code"
             if _column_exists(conn, "fact_orders_kaspi", "store_code")
             else "'UNIVERSAL'"
         )
-        ctes[-1] = f"""
-        lifecycle_excluded_order_keys AS (
+        lifecycle_exclusion_selects.append(
+            f"""
             SELECT DISTINCT
                 CAST(order_id AS TEXT) AS order_id,
                 UPPER(TRIM(COALESCE({lifecycle_store}, 'UNIVERSAL'))) AS store_code
             FROM fact_orders_kaspi
             WHERE UPPER(TRIM(COALESCE(internal_status, ''))) IN ('CANCELLED', 'RETURNED')
+            """
+        )
+    if (
+        _table_exists(conn, "order_status_event")
+        and _column_exists(conn, "order_status_event", "order_id")
+        and _column_exists(conn, "order_status_event", "stage_code")
+    ):
+        lifecycle_event_store = (
+            "store_code"
+            if _column_exists(conn, "order_status_event", "store_code")
+            else "'UNIVERSAL'"
+        )
+        lifecycle_exclusion_selects.append(
+            f"""
+            SELECT DISTINCT
+                CAST(order_id AS TEXT) AS order_id,
+                UPPER(TRIM(COALESCE({lifecycle_event_store}, 'UNIVERSAL'))) AS store_code
+            FROM order_status_event
+            WHERE UPPER(TRIM(COALESCE(stage_code, ''))) IN ('CANCELLED', 'RETURNED')
+            """
+        )
+    lifecycle_exclusion_sql = (
+        "\nUNION\n".join(lifecycle_exclusion_selects)
+        if lifecycle_exclusion_selects
+        else "SELECT NULL AS order_id, NULL AS store_code WHERE 0"
+    )
+    ctes.append(
+        f"""
+        lifecycle_excluded_order_keys AS (
+            {lifecycle_exclusion_sql}
         )
         """
+    )
     ctes.append(
         """
         base_lines AS (
@@ -616,6 +709,7 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             SELECT
                 b.order_id,
                 COALESCE(wa.anchor_sale_date, b.sale_date) AS sale_date,
+                b.sale_date AS source_sale_date,
                 b.store_code,
                 COALESCE(
                     NULLIF(am_key_store.sku_key, ''),
@@ -647,6 +741,9 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
                 b.cogs_kzt AS source_cogs_kzt,
                 b.profit_kzt AS source_profit_kzt,
                 b.source_table,
+                b.source_row_id,
+                b.source_entry_id,
+                b.source_line_identity_key,
                 b.sku_key AS source_sku_key,
                 b.sku_id AS source_sku_id,
                 b.units AS source_units,
@@ -765,7 +862,7 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
 
     cte_sql = ",\n".join(ctes)
     line_view_sql = f"""
-        CREATE VIEW view_sales_line_truth AS
+        CREATE VIEW view_sales_line_truth_unbound AS
         WITH {cte_sql}
         SELECT
             rl.order_id,
@@ -806,7 +903,13 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             rl.source_units,
             rl.source_net_rev_kzt,
             rl.source_cogs_kzt,
-            rl.source_profit_kzt
+            rl.source_profit_kzt,
+            rl.source_sale_date,
+            rl.source_row_id,
+            rl.source_entry_id,
+            rl.source_line_identity_key,
+            'UNBOUND' AS publication_binding_status,
+            0 AS publication_provisional_flag
         FROM resolved_lines rl
         {dim_join}
         LEFT JOIN owner_cogs_override oco
@@ -816,6 +919,230 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
          AND oco.sku_id = rl.canonical_sku_id
     """
     conn.execute(line_view_sql)
+
+    if has_publication_binding:
+        binding_validation_sql = """
+            CREATE VIEW view_sales_publication_binding_validation AS
+            WITH active_counts AS (
+                SELECT
+                    CAST(order_id AS TEXT) AS order_id,
+                    UPPER(TRIM(store_code)) AS store_code,
+                    COUNT(*) AS active_header_count
+                FROM fact_sales_publication_binding_header
+                WHERE active_flag = 1
+                GROUP BY 1, 2
+            ),
+            binding_checks AS (
+                SELECT
+                    h.*,
+                    COALESCE(ac.active_header_count, 0) AS active_header_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM fact_sales_workbook_anchor a
+                        WHERE CAST(a.order_id AS TEXT) = CAST(h.order_id AS TEXT)
+                          AND UPPER(TRIM(a.store_code)) = UPPER(TRIM(h.store_code))
+                    ) AS anchor_row_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM fact_sales_workbook_anchor a
+                        WHERE CAST(a.order_id AS TEXT) = CAST(h.order_id AS TEXT)
+                          AND UPPER(TRIM(a.store_code)) = UPPER(TRIM(h.store_code))
+                          AND date(a.sale_date) = date(h.anchor_sale_date)
+                          AND ABS(CAST(a.quantity AS REAL) - CAST(h.anchor_quantity AS REAL)) <= 0.0001
+                          AND ABS(CAST(a.net_rev_kzt AS REAL) - CAST(h.anchor_net_rev_kzt AS REAL)) <= 0.01
+                          AND ABS(CAST(a.total_price_kzt AS REAL) - CAST(h.anchor_total_price_kzt AS REAL)) <= 0.01
+                          AND COALESCE(a.source_file, '') = COALESCE(h.anchor_source_file, '')
+                          AND COALESCE(a.updated_at, '') = COALESCE(h.anchor_updated_at, '')
+                    ) AS matching_anchor_row_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM fact_sales_publication_binding_line l
+                        WHERE l.binding_id = h.binding_id
+                    ) AS binding_line_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM fact_sales_publication_binding_line l
+                        JOIN sales_fact_v2 s ON s.sale_id = l.source_sale_id
+                        WHERE l.binding_id = h.binding_id
+                          AND l.source_table = 'sales_fact_v2'
+                          AND CAST(s.order_id AS TEXT) = l.source_order_id
+                          AND UPPER(TRIM(COALESCE(s.store_code, 'UNIVERSAL'))) = UPPER(TRIM(l.source_store_code))
+                          AND date(s.order_date) = date(l.source_order_date)
+                          AND COALESCE(s.sku_key, '') = l.source_sku_key
+                          AND COALESCE(s.sku_id, '') = l.source_sku_id
+                          AND COALESCE(s.my_size, '') = l.source_my_size
+                          AND ABS(CAST(s.quantity AS REAL) - CAST(l.source_quantity AS REAL)) <= 0.0001
+                          AND ABS(CAST(s.sell_price_kzt AS REAL) - CAST(l.source_sell_price_kzt AS REAL)) <= 0.01
+                          AND ABS(CAST(s.delivery_fee AS REAL) - CAST(l.source_delivery_fee AS REAL)) <= 0.01
+                          AND ((s.cogs IS NULL AND l.source_cogs_kzt IS NULL)
+                               OR ABS(CAST(s.cogs AS REAL) - CAST(l.source_cogs_kzt AS REAL)) <= 0.01)
+                          AND ABS(CAST(s.net_rev AS REAL) - CAST(l.source_net_rev_kzt AS REAL)) <= 0.01
+                          AND ((s.profit IS NULL AND l.source_profit_kzt IS NULL)
+                               OR ABS(CAST(s.profit AS REAL) - CAST(l.source_profit_kzt AS REAL)) <= 0.01)
+                          AND UPPER(TRIM(COALESCE(s.status, ''))) = UPPER(TRIM(l.source_status))
+                          AND COALESCE(s.return_flag, 0) = l.source_return_flag
+                          AND COALESCE(s.source_file, '') = COALESCE(l.source_file, '')
+                          AND COALESCE(s.source_entry_id, '') = l.source_entry_id
+                          AND COALESCE(s.kaspi_article, '') = COALESCE(l.source_kaspi_article, '')
+                          AND COALESCE(s.line_identity_key, '') = l.line_identity_key
+                    ) AS matching_source_line_count,
+                    (
+                        SELECT COUNT(*)
+                        FROM fact_sales_publication_binding_line l
+                        JOIN view_sales_line_truth_unbound u
+                          ON u.source_table = l.source_table
+                         AND CAST(u.source_row_id AS TEXT) = CAST(l.source_sale_id AS TEXT)
+                        WHERE l.binding_id = h.binding_id
+                          AND CAST(u.order_id AS TEXT) = l.source_order_id
+                          AND UPPER(TRIM(COALESCE(u.store_code, 'UNIVERSAL'))) = UPPER(TRIM(l.source_store_code))
+                          AND date(u.source_sale_date) = date(l.source_order_date)
+                          AND COALESCE(u.source_entry_id, '') = l.source_entry_id
+                          AND COALESCE(u.source_line_identity_key, '') = l.line_identity_key
+                          AND COALESCE(u.source_sku_key, '') = l.source_sku_key
+                          AND COALESCE(u.source_sku_id, '') = l.source_sku_id
+                          AND COALESCE(u.my_size, '') = l.source_my_size
+                          AND ABS(CAST(u.source_units AS REAL) - CAST(l.source_quantity AS REAL)) <= 0.0001
+                          AND ABS(CAST(u.source_net_rev_kzt AS REAL) - CAST(l.source_net_rev_kzt AS REAL)) <= 0.01
+                          AND date(u.sale_date) = date(l.unbound_sale_date)
+                          AND ABS(CAST(u.units AS REAL) - CAST(l.unbound_units AS REAL)) <= 0.0001
+                          AND ABS(CAST(u.net_rev_kzt AS REAL) - CAST(l.unbound_net_rev_kzt AS REAL)) <= 0.01
+                          AND date(l.publication_sale_date) = date(h.publication_effective_date)
+                          AND ABS(CAST(l.publication_units AS REAL) - CAST(l.source_quantity AS REAL)) <= 0.0001
+                          AND ABS(CAST(l.publication_net_rev_kzt AS REAL) - CAST(l.source_net_rev_kzt AS REAL)) <= 0.01
+                    ) AS matching_unbound_line_count
+                FROM fact_sales_publication_binding_header h
+                LEFT JOIN active_counts ac
+                  ON ac.order_id = CAST(h.order_id AS TEXT)
+                 AND ac.store_code = UPPER(TRIM(h.store_code))
+                WHERE h.active_flag = 1
+            )
+            SELECT
+                binding_id,
+                CAST(order_id AS TEXT) AS order_id,
+                UPPER(TRIM(store_code)) AS store_code,
+                active_flag,
+                provisional_flag,
+                publication_effective_date,
+                expected_line_count,
+                active_header_count,
+                anchor_row_count,
+                matching_anchor_row_count,
+                binding_line_count,
+                matching_source_line_count,
+                matching_unbound_line_count,
+                CASE
+                    WHEN binding_status <> 'VALID' THEN 'HEADER_NOT_VALID'
+                    WHEN active_header_count <> 1 THEN 'ACTIVE_HEADER_COUNT_MISMATCH'
+                    WHEN provisional_flag <> 0 THEN 'PROVISIONAL_BINDING_FORBIDDEN'
+                    WHEN terminal_date_semantics <> 'STATUS_CHANGE_TIMESTAMP_PROVEN' THEN 'TERMINAL_DATE_NOT_PROVEN'
+                    WHEN external_evidence_validated <> 1 THEN 'EXTERNAL_EVIDENCE_NOT_VALIDATED'
+                    WHEN anchor_row_count <> 1 OR matching_anchor_row_count <> 1 THEN 'ANCHOR_PREIMAGE_MISMATCH'
+                    WHEN binding_line_count <> expected_line_count THEN 'BINDING_LINE_COUNT_MISMATCH'
+                    WHEN matching_source_line_count <> expected_line_count THEN 'SOURCE_PREIMAGE_MISMATCH'
+                    WHEN matching_unbound_line_count <> expected_line_count THEN 'UNBOUND_PREIMAGE_MISMATCH'
+                    ELSE 'VALID_ACTIVE'
+                END AS validation_status,
+                CASE
+                    WHEN binding_status = 'VALID'
+                     AND active_header_count = 1
+                     AND provisional_flag = 0
+                     AND terminal_date_semantics = 'STATUS_CHANGE_TIMESTAMP_PROVEN'
+                     AND external_evidence_validated = 1
+                     AND anchor_row_count = 1
+                     AND matching_anchor_row_count = 1
+                     AND binding_line_count = expected_line_count
+                     AND matching_source_line_count = expected_line_count
+                     AND matching_unbound_line_count = expected_line_count
+                    THEN 1 ELSE 0
+                END AS publication_binding_usable
+            FROM binding_checks
+        """
+    else:
+        binding_validation_sql = """
+            CREATE VIEW view_sales_publication_binding_validation AS
+            SELECT
+                NULL AS binding_id,
+                NULL AS order_id,
+                NULL AS store_code,
+                0 AS active_flag,
+                0 AS provisional_flag,
+                NULL AS publication_effective_date,
+                0 AS expected_line_count,
+                0 AS active_header_count,
+                0 AS anchor_row_count,
+                0 AS matching_anchor_row_count,
+                0 AS binding_line_count,
+                0 AS matching_source_line_count,
+                0 AS matching_unbound_line_count,
+                NULL AS validation_status,
+                0 AS publication_binding_usable
+            WHERE 0
+        """
+    conn.execute(binding_validation_sql)
+
+    if has_publication_binding:
+        bound_line_join = """
+            LEFT JOIN fact_sales_publication_binding_line pbl
+              ON pbl.binding_id = pbv.binding_id
+             AND pbl.source_table = u.source_table
+             AND CAST(pbl.source_sale_id AS TEXT) = CAST(u.source_row_id AS TEXT)
+        """
+    else:
+        bound_line_join = """
+            LEFT JOIN (
+                SELECT NULL AS binding_id, NULL AS source_table, NULL AS source_sale_id,
+                       NULL AS publication_sale_date, NULL AS publication_units,
+                       NULL AS publication_net_rev_kzt
+                WHERE 0
+            ) pbl ON 1 = 0
+        """
+
+    canonical_line_sql = f"""
+        CREATE VIEW view_sales_line_truth AS
+        SELECT
+            u.order_id,
+            CASE WHEN pbv.publication_binding_usable = 1
+                 THEN date(pbl.publication_sale_date) ELSE u.sale_date END AS sale_date,
+            u.store_code,
+            u.sku_key,
+            u.sku_id,
+            u.my_size,
+            CASE WHEN pbv.publication_binding_usable = 1
+                 THEN CAST(pbl.publication_units AS REAL) ELSE u.units END AS units,
+            CASE WHEN pbv.publication_binding_usable = 1
+                 THEN CAST(pbl.publication_net_rev_kzt AS REAL) ELSE u.net_rev_kzt END AS net_rev_kzt,
+            u.cogs_kzt,
+            CASE
+                WHEN u.cogs_kzt IS NULL THEN NULL
+                WHEN pbv.publication_binding_usable = 1
+                    THEN ROUND(CAST(pbl.publication_net_rev_kzt AS REAL) - u.cogs_kzt, 2)
+                ELSE u.profit_kzt
+            END AS profit_kzt,
+            u.cogs_source,
+            u.source_table,
+            u.source_sku_key,
+            u.source_sku_id,
+            u.source_units,
+            u.source_net_rev_kzt,
+            u.source_cogs_kzt,
+            u.source_profit_kzt,
+            u.source_sale_date,
+            u.source_row_id,
+            u.source_entry_id,
+            u.source_line_identity_key,
+            CASE
+                WHEN pbv.binding_id IS NULL THEN 'UNBOUND'
+                WHEN pbv.publication_binding_usable = 1 THEN 'VALID_ACTIVE'
+                ELSE 'INVALID_ACTIVE:' || COALESCE(pbv.validation_status, 'UNKNOWN')
+            END AS publication_binding_status,
+            COALESCE(pbv.provisional_flag, 0) AS publication_provisional_flag
+        FROM view_sales_line_truth_unbound u
+        LEFT JOIN view_sales_publication_binding_validation pbv
+          ON pbv.order_id = CAST(u.order_id AS TEXT)
+         AND pbv.store_code = UPPER(TRIM(COALESCE(u.store_code, 'UNIVERSAL')))
+        {bound_line_join}
+    """
+    conn.execute(canonical_line_sql)
 
     daily_view_sql = """
         CREATE VIEW view_sales_daily_truth AS
@@ -827,7 +1154,10 @@ def ensure_sales_truth_views(conn: sqlite3.Connection) -> None:
             SUM(COALESCE(net_rev_kzt, 0)) AS revenue_kzt,
             SUM(COALESCE(cogs_kzt, 0)) AS cogs_kzt,
             SUM(COALESCE(profit_kzt, 0)) AS profit_kzt,
-            COUNT(*) AS line_count
+            COUNT(*) AS line_count,
+            CASE WHEN COUNT(DISTINCT publication_binding_status) = 1
+                 THEN MAX(publication_binding_status) ELSE 'MIXED' END AS publication_binding_status,
+            MAX(COALESCE(publication_provisional_flag, 0)) AS publication_provisional_flag
         FROM view_sales_line_truth
         GROUP BY sale_date, store_code, sku_key
     """

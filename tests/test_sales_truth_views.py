@@ -91,6 +91,79 @@ def test_view_sales_line_truth_prefers_sales_fact_v2_on_overlap(tmp_path: Path) 
     assert row[1] == "sales_fact_v2"
 
 
+def test_truth_view_terminal_lifecycle_spine_overrides_stale_new_projection(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "app.db"
+    conn = sqlite3.connect(db)
+    _seed_schema(conn)
+    conn.executescript(
+        """
+        CREATE TABLE fact_orders_kaspi (
+            order_id TEXT,
+            store_code TEXT,
+            internal_status TEXT
+        );
+        CREATE TABLE order_status_event (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT,
+            store_code TEXT,
+            stage_code TEXT,
+            event_ts TEXT
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO dim_sku (sku_key, base_cost_cny, weight_kg, cogs_kzt) VALUES (?, ?, ?, ?)",
+        [
+            ("SKU_CANCELLED", 40, 0.5, 0),
+            ("SKU_RETURNED", 40, 0.5, 0),
+            ("SKU_COMPLETED", 40, 0.5, 0),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO sales_fact_v2
+        (order_id, order_date, sku_key, sku_id, my_size, store_code, quantity,
+         net_rev, cogs, profit, status, return_flag)
+        VALUES (?, ?, ?, ?, '', ?, 1, 9000, 0, 0, 'DELIVERED', 0)
+        """,
+        [
+            ("ORD-CANCELLED", "2026-02-08", "SKU_CANCELLED", "SKU_CANCELLED_L", "ACMEWEAR"),
+            ("ORD-RETURNED", "2026-02-08", "SKU_RETURNED", "SKU_RETURNED_L", "ACMEWEAR"),
+            ("ORD-COMPLETED", "2026-02-08", "SKU_COMPLETED", "SKU_COMPLETED_L", "ACMEWEAR"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO fact_orders_kaspi (order_id, store_code, internal_status) VALUES (?, ?, 'NEW')",
+        [
+            ("ORD-CANCELLED", "ACMEWEAR"),
+            ("ORD-RETURNED", "ACMEWEAR"),
+            ("ORD-COMPLETED", "ACMEWEAR"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO order_status_event (order_id, store_code, stage_code, event_ts)
+        VALUES (?, 'ACMEWEAR', ?, '2026-02-08')
+        """,
+        [
+            ("ORD-CANCELLED", "CANCELLED"),
+            ("ORD-RETURNED", "RETURNED"),
+            ("ORD-COMPLETED", "ISSUED_COMPLETED"),
+        ],
+    )
+    conn.commit()
+
+    ensure_sales_truth_views(conn)
+    rows = conn.execute(
+        "SELECT order_id FROM view_sales_line_truth ORDER BY order_id"
+    ).fetchall()
+    conn.close()
+
+    assert rows == [("ORD-COMPLETED",)]
+
+
 def test_view_sales_daily_truth_uses_fact_sales_when_missing_in_sales_fact_v2(tmp_path: Path) -> None:
     db = tmp_path / "app.db"
     conn = sqlite3.connect(db)
