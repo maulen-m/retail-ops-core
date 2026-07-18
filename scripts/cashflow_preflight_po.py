@@ -55,6 +55,26 @@ class PreflightSummary:
     horizon_days: int
 
 
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    resolved = db_path.expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"DB not found: {resolved}")
+    conn = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
+def _paths_collide(left: Path, right: Path) -> bool:
+    left_resolved = left.expanduser().resolve()
+    right_resolved = right.expanduser().resolve()
+    if left_resolved == right_resolved:
+        return True
+    try:
+        return left_resolved.exists() and right_resolved.exists() and left_resolved.samefile(right_resolved)
+    except OSError:
+        return False
+
+
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -159,7 +179,7 @@ def evaluate_preflight(
     if str(scenarios_cfg.get("cash_in_mode", "")).lower() == "delivered":
         payout_lag = 0
 
-    with sqlite3.connect(str(db_path)) as conn:
+    with _connect_readonly(db_path) as conn:
         conn.row_factory = sqlite3.Row
         history = _load_daily(conn, cutoff, history_days=90)
         if not history:
@@ -226,8 +246,19 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=EXPORT_PATH, help="Path for the preflight report")
     args = parser.parse_args()
 
+    args.db = args.db.expanduser().resolve()
+    args.output = args.output.expanduser().resolve()
+    if _paths_collide(args.output, args.db):
+        print("FAIL: --output must not resolve to the DB path or an existing hardlink to it.")
+        return 2
+    if args.db != DEFAULT_DB.expanduser().resolve() and args.output == EXPORT_PATH.expanduser().resolve():
+        print(
+            "FAIL: --output is required and must be noncanonical when --db is not the production DB."
+        )
+        return 2
+
     cutoff = get_cutoff_date_almaty()
-    with sqlite3.connect(str(args.db)) as conn:
+    with _connect_readonly(args.db) as conn:
         opex_monthly = _load_monthly_opex(conn, cutoff)
     if opex_monthly <= 0:
         print("FAIL: OPEX commitments missing; import OPEX protocol before preflight.")

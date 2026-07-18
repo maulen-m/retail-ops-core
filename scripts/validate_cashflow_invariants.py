@@ -13,6 +13,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 
 
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    resolved = db_path.expanduser().resolve()
+    conn = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -23,7 +30,7 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 def validate(db_path: Path, tolerance: float) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"DB not found: {db_path}")
-    conn = sqlite3.connect(str(db_path))
+    conn = _connect_readonly(db_path)
     conn.row_factory = sqlite3.Row
     try:
         if not _table_exists(conn, "fact_cashflow_daily"):
