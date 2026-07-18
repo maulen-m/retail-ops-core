@@ -20,11 +20,18 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.integrations.google_ops_board import (
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_LEGACY_V3,
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
+    REQUIRED_SPLIT_COLUMNS,
+    contract_for_ownership_mode,
+    detect_board_ownership_layout,
     dump_json,
     extract_rows_from_matrix,
     extract_rows_with_positions_from_matrix,
     load_ops_board_contract,
     merge_rows_preserving_editables,
+    plan_sparse_cell_updates,
     rows_to_matrix,
     resolve_service_account_json,
     resolve_spreadsheet_id,
@@ -824,9 +831,9 @@ def build_phase1_payload(
     shipping_rows: list[dict[str, Any]] = []
     shipped_rows: list[dict[str, Any]] = []
     exception_rows: list[dict[str, Any]] = []
-    run_control_rows: list[dict[str, Any]] = [
-        {
-            "target_date": target.isoformat(),
+    run_defaults = dict(contract.tabs["Run_Control"].new_row_defaults)
+    if not run_defaults:
+        run_defaults = {
             "ready_for_closeout": "HOLD",
             "ready_set_by": "",
             "ready_set_at": "",
@@ -835,6 +842,8 @@ def build_phase1_payload(
             "last_orchestrator_run_id": "",
             "last_orchestrator_status": "",
         }
+    run_control_rows: list[dict[str, Any]] = [
+        {"target_date": target.isoformat(), **run_defaults}
     ]
 
     for order_id in sorted(all_grouped):
@@ -941,8 +950,12 @@ def build_phase1_payload(
         {"field": "source_of_truth", "value": "db/app.db", "notes": "Google Sheet is an ops surface, not the canonical truth"},
         {
             "field": "employee_edit_policy",
-            "value": "preserve_editable_columns_only",
-            "notes": "Publisher preserves contract-marked editable columns; DB writeback is explicit",
+            "value": (
+                "split_sparse_write_ownership"
+                if contract.board_ownership_mode == OWNERSHIP_MODE_SPLIT_V1
+                else "preserve_editable_columns_only"
+            ),
+            "notes": "Existing-row publisher requests omit employee and watcher cells",
         },
         {
             "field": "overdue_policy",
@@ -952,7 +965,7 @@ def build_phase1_payload(
         {
             "field": "closeout_gate",
             "value": (
-                "Run_Control.READY + no blank SalesRaw_Today.MY_SIZE + "
+                "resolved Run_Control READY identity + no blank effective size + "
                 "exact safe product attribution"
             ),
             "notes": (
@@ -974,7 +987,11 @@ def build_phase1_payload(
         },
         {
             "key": "size_writeback_contract",
-            "value": "SalesRaw_Today.MY_SIZE -> fact_orders_kaspi.assigned_size",
+            "value": (
+                "employee-first effective size -> fact_orders_kaspi.assigned_size"
+                if contract.board_ownership_mode == OWNERSHIP_MODE_SPLIT_V1
+                else "SalesRaw_Today.MY_SIZE -> fact_orders_kaspi.assigned_size"
+            ),
             "notes": "Narrow phase-2 writeback path by db row id",
         },
         {
@@ -1217,6 +1234,41 @@ def _is_trailing_header_extension(expected_headers: list[str], observed_row: lis
     )
 
 
+def _column_letter(column_number: int) -> str:
+    letters = ""
+    value = int(column_number)
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def _plan_v4_trailing_header_migration(
+    contract,
+    header_rows: dict[str, list[Any]],
+) -> list[dict[str, Any]]:
+    updates: list[dict[str, Any]] = []
+    for tab_name, appended_columns in REQUIRED_SPLIT_COLUMNS.items():
+        expected = contract.tabs[tab_name].headers
+        observed = [str(value or "").strip() for value in header_rows.get(tab_name, [])]
+        while observed and not observed[-1]:
+            observed.pop()
+        legacy_expected = expected[: -len(appended_columns)]
+        if observed != legacy_expected:
+            raise ValueError(
+                f"{tab_name} is not an exact legacy trailing-header migration source"
+            )
+        for offset, column in enumerate(appended_columns, start=len(legacy_expected) + 1):
+            updates.append(
+                {
+                    "range": f"{tab_name}!{_column_letter(offset)}1",
+                    "value": column,
+                    "field": column,
+                }
+            )
+    return updates
+
+
 def _append_only_tab_rows(tab_contract, fresh_rows: list[dict[str, Any]], existing_rows: list[dict[str, Any]]) -> dict[str, Any]:
     existing_keys = {
         _clean_str(row.get(tab_contract.key_column)): row
@@ -1245,6 +1297,8 @@ def _upsert_preserve_tab_rows(
     tab_contract,
     fresh_rows: list[dict[str, Any]],
     existing_rows_with_positions: list[dict[str, Any]],
+    *,
+    sparse_existing_updates: bool = False,
 ) -> dict[str, Any]:
     existing_by_key: dict[str, dict[str, Any]] = {}
     fresh_keys = {
@@ -1265,6 +1319,7 @@ def _upsert_preserve_tab_rows(
         existing_by_key[key] = entry
 
     update_rows: list[dict[str, Any]] = []
+    cell_updates: list[dict[str, Any]] = []
     append_rows: list[dict[str, Any]] = []
     final_rows: list[dict[str, Any]] = []
     seen_fresh_keys: set[str] = set()
@@ -1284,8 +1339,20 @@ def _upsert_preserve_tab_rows(
             fresh_rows=[fresh],
             existing_rows=[entry["row"]],
         )[0]
-        if not rewrite_required and merged != entry["row"]:
-            update_rows.append({"sheet_row": int(entry["sheet_row"]), "row": merged})
+        if merged != entry["row"]:
+            if sparse_existing_updates:
+                cell_updates.extend(
+                    plan_sparse_cell_updates(
+                        tab_contract=tab_contract,
+                        sheet_row=int(entry["sheet_row"]),
+                        existing_row=dict(entry["row"]),
+                        desired_row=merged,
+                    )
+                )
+            elif not rewrite_required:
+                update_rows.append(
+                    {"sheet_row": int(entry["sheet_row"]), "row": merged}
+                )
         final_rows.append(merged)
         seen_fresh_keys.add(key)
 
@@ -1296,15 +1363,29 @@ def _upsert_preserve_tab_rows(
         append_rows.append(fresh)
         final_rows.append(fresh)
 
-    if rewrite_required:
+    if rewrite_required and not sparse_existing_updates:
         update_rows = []
         append_rows = []
 
+    delete_rows = sorted(
+        {
+            int(entry["sheet_row"])
+            for entry in stale_existing_rows + duplicate_existing_rows
+        },
+        reverse=True,
+    ) if sparse_existing_updates else []
+
     return {
-        "mode": "rewrite_preserve" if rewrite_required else "upsert_preserve",
+        "mode": (
+            "upsert_sparse"
+            if sparse_existing_updates
+            else ("rewrite_preserve" if rewrite_required else "upsert_preserve")
+        ),
         "existing_rows": [dict(entry["row"]) for entry in existing_rows_with_positions],
         "fresh_rows": fresh_rows,
         "update_rows": update_rows,
+        "cell_updates": cell_updates,
+        "delete_rows": delete_rows,
         "append_rows": append_rows,
         "final_rows": final_rows,
         "removed_rows": [dict(entry["row"]) for entry in stale_existing_rows + duplicate_existing_rows],
@@ -1343,7 +1424,14 @@ def build_publish_plan(
                 "final_rows": list(fresh_rows),
             }
             continue
-        tab_actions[tab_name] = _upsert_preserve_tab_rows(tab_contract, fresh_rows, existing_rows_with_positions)
+        tab_actions[tab_name] = _upsert_preserve_tab_rows(
+            tab_contract,
+            fresh_rows,
+            existing_rows_with_positions,
+            sparse_existing_updates=(
+                contract.board_ownership_mode == OWNERSHIP_MODE_SPLIT_V1
+            ),
+        )
 
     return {
         "target_date": target_iso,
@@ -1405,6 +1493,11 @@ def main(argv: list[str] | None = None) -> int:
         "--force-rewrite-operational-tabs",
         action="store_true",
         help="Rewrite live operational tabs even on same-day publishes (repair / reset mode)",
+    )
+    parser.add_argument(
+        "--migrate-v4-trailing-headers",
+        action="store_true",
+        help="Append only v4 ownership headers and UI; never rewrite data rows",
     )
     parser.add_argument("--output-json", type=Path, default=None, help="Optional JSON report path")
     args = parser.parse_args(argv)
@@ -1478,17 +1571,115 @@ def main(argv: list[str] | None = None) -> int:
     spreadsheet_id = resolve_spreadsheet_id(args.spreadsheet_id, contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
 
-    created_tabs: list[str] = []
-    if args.apply:
-        created_tabs = client.ensure_tabs(list(contract.tabs))
     sheet_names = client.get_sheet_names()
     existing_tab_names = [tab_name for tab_name in contract.tabs if tab_name in sheet_names]
     header_rows = client.get_header_rows(existing_tab_names)
-    layout_report = validate_contract_layout(contract=contract, sheet_names=sheet_names, header_rows=header_rows)
+    ownership_layout = detect_board_ownership_layout(header_rows)
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        output_path = _build_output_path(args.output_json, target)
+        dump_json(
+            output_path,
+            {
+                "ok": False,
+                "mode": "apply" if args.apply else "dry_run",
+                "target_date": target.isoformat(),
+                "write_applied": False,
+                "ownership_mode": OWNERSHIP_MODE_PARTIAL,
+                "ownership_layout": ownership_layout,
+                "failure_stage": "ownership_layout",
+            },
+        )
+        print("ERROR: partial Board ownership layout; no Sheet write performed.", file=sys.stderr)
+        return 1
+    active_contract = contract_for_ownership_mode(
+        contract, ownership_layout["ownership_mode"]
+    )
+    if (
+        ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1
+        and args.force_rewrite_operational_tabs
+    ):
+        print(
+            "ERROR: split-v1 forbids whole-row same-day operational rewrites.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if active_contract.version != contract.version:
+        payload = build_phase1_payload(
+            db_path=db_path,
+            contract=active_contract,
+            target_date=target,
+            lookback_days=args.lookback_days,
+            obligation_ledger_path=DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
+        )
+        attribution_report = audit_salesraw_name_core_attribution(
+            rows=list(payload.get("SalesRaw_Today") or []),
+            db_path=db_path,
+            include_safe_rows=False,
+        )
+        visibility_annotation = annotate_unsafe_attribution_for_visibility(
+            payload=payload,
+            attribution_report=attribution_report,
+            target_date=target,
+        )
+        if not visibility_annotation["ok"]:
+            print(
+                "ERROR: legacy-mode payload visibility annotation failed.",
+                file=sys.stderr,
+            )
+            return 1
+
+    created_tabs: list[str] = []
+    if args.apply:
+        created_tabs = client.ensure_tabs(list(active_contract.tabs))
+    sheet_names = client.get_sheet_names()
+    existing_tab_names = [
+        tab_name for tab_name in active_contract.tabs if tab_name in sheet_names
+    ]
+    header_rows = client.get_header_rows(existing_tab_names)
+    layout_report = validate_contract_layout(
+        contract=active_contract, sheet_names=sheet_names, header_rows=header_rows
+    )
+
+    if args.migrate_v4_trailing_headers:
+        if contract.version != 4:
+            raise RuntimeError("v4 trailing-header migration requires contract version 4")
+        if ownership_layout["ownership_mode"] != OWNERSHIP_MODE_LEGACY_V3:
+            raise RuntimeError(
+                "v4 trailing-header migration requires an exact legacy_v3 layout"
+            )
+        migration_updates = _plan_v4_trailing_header_migration(
+            contract, header_rows
+        )
+        migration_report: dict[str, Any] = {
+            "ok": True,
+            "mode": "apply" if args.apply else "dry_run",
+            "target_date": target.isoformat(),
+            "ownership_mode_before": OWNERSHIP_MODE_LEGACY_V3,
+            "migration": "trailing_headers_and_ui_only",
+            "data_row_rewrite_count": 0,
+            "header_updates": migration_updates,
+            "write_applied": False,
+        }
+        if args.apply:
+            client.update_cells(migration_updates)
+            migration_report["ui_applied_tabs"] = client.apply_contract_ui(contract)
+            after_headers = client.get_header_rows(list(contract.tabs))
+            after_layout = detect_board_ownership_layout(after_headers)
+            migration_report["ownership_layout_after"] = after_layout
+            migration_report["ownership_mode_after"] = after_layout["ownership_mode"]
+            migration_report["write_applied"] = True
+            migration_report["ok"] = (
+                after_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1
+            )
+        output_path = _build_output_path(args.output_json, target)
+        dump_json(output_path, migration_report)
+        print(f"Google Ops Board migration report: {output_path}")
+        return 0 if migration_report["ok"] else 1
 
     before_snapshot = client.snapshot_tabs(existing_tab_names)
     publish_plan = build_publish_plan(
-        contract=contract,
+        contract=active_contract,
         before_snapshot=before_snapshot,
         fresh_payload=payload,
         target_date=target,
@@ -1499,7 +1690,7 @@ def main(argv: list[str] | None = None) -> int:
         tab_name
         for tab_name in list(invalid_tabs)
         if _is_trailing_header_extension(
-            contract.tabs[tab_name].headers,
+            active_contract.tabs[tab_name].headers,
             header_rows.get(tab_name),
         )
     }
@@ -1508,7 +1699,7 @@ def main(argv: list[str] | None = None) -> int:
         for tab_name, rows in payload.items():
             if tab_name not in invalid_tabs:
                 continue
-            existing_rows = extract_rows_from_matrix(contract.tabs[tab_name].headers, before_snapshot.get(tab_name))
+            existing_rows = extract_rows_from_matrix(active_contract.tabs[tab_name].headers, before_snapshot.get(tab_name))
             publish_plan["tab_actions"][tab_name] = {
                 "mode": "rewrite",
                 "existing_rows": existing_rows,
@@ -1517,7 +1708,7 @@ def main(argv: list[str] | None = None) -> int:
                 "append_rows": [],
                 "final_rows": list(rows),
             }
-        if invalid_tabs == set(contract.tabs):
+        if invalid_tabs == set(active_contract.tabs):
             publish_plan["same_day_preserve"] = False
         publish_plan["layout_repair_rewrite"] = True
     publish_plan["layout_header_update_tabs"] = sorted(layout_header_update_tabs)
@@ -1525,7 +1716,11 @@ def main(argv: list[str] | None = None) -> int:
     tab_counts: dict[str, dict[str, int]] = {}
     planned_write_operations = 0
     for tab_name, action in publish_plan["tab_actions"].items():
-        write_rows = len(action["final_rows"])
+        write_rows = (
+            len(action["final_rows"])
+            if action["mode"] in {"rewrite", "rewrite_preserve"}
+            else 0
+        )
         if action["mode"] == "rewrite" and action["existing_rows"] == action["final_rows"] and tab_name not in invalid_tabs:
             write_rows = 0
         header_update = tab_name in layout_header_update_tabs
@@ -1535,6 +1730,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         operation_count = (
             len(action.get("update_rows") or [])
+            + len(action.get("cell_updates") or [])
+            + len(action.get("delete_rows") or [])
             + len(action.get("append_rows") or [])
             + write_rows
             + (1 if clear_before_write else 0)
@@ -1546,6 +1743,8 @@ def main(argv: list[str] | None = None) -> int:
             "existing_rows": len(action["existing_rows"]),
             "removed_rows": len(action.get("removed_rows") or []),
             "update_rows": len(action.get("update_rows") or []),
+            "cell_updates": len(action.get("cell_updates") or []),
+            "delete_rows": len(action.get("delete_rows") or []),
             "append_rows": len(action["append_rows"]),
             "write_rows": len(action["final_rows"]),
             "clear_before_write": clear_before_write,
@@ -1562,6 +1761,9 @@ def main(argv: list[str] | None = None) -> int:
         "target_date": target.isoformat(),
         "lookback_days": args.lookback_days,
         "layout_report": layout_report,
+        "configured_contract_version": contract.version,
+        "ownership_mode": ownership_layout["ownership_mode"],
+        "ownership_layout": ownership_layout,
         "name_core_attribution": attribution_report,
         "visibility_annotation": visibility_annotation,
         "closeout_ready": bool(attribution_report["ok"]),
@@ -1592,18 +1794,27 @@ def main(argv: list[str] | None = None) -> int:
         skipped_noop_tabs: list[str] = []
         for tab_name, action in publish_plan["tab_actions"].items():
             if tab_name in layout_header_update_tabs:
-                headers = contract.tabs[tab_name].headers
+                headers = active_contract.tabs[tab_name].headers
                 client.update_tab_rows(
                     tab_name,
                     headers,
                     [{"sheet_row": 1, "row": {header: header for header in headers}}],
                 )
             if action["mode"] == "upsert_preserve":
-                client.update_tab_rows(tab_name, contract.tabs[tab_name].headers, action["update_rows"])
-                client.append_tab_rows(tab_name, contract.tabs[tab_name].headers, action["append_rows"])
+                client.update_tab_rows(tab_name, active_contract.tabs[tab_name].headers, action["update_rows"])
+                client.append_tab_rows(tab_name, active_contract.tabs[tab_name].headers, action["append_rows"])
+                continue
+            if action["mode"] == "upsert_sparse":
+                client.update_cells(action.get("cell_updates") or [])
+                client.delete_tab_rows(tab_name, action.get("delete_rows") or [])
+                client.append_tab_rows(
+                    tab_name,
+                    active_contract.tabs[tab_name].headers,
+                    action["append_rows"],
+                )
                 continue
             if action["mode"] == "append_only":
-                client.append_tab_rows(tab_name, contract.tabs[tab_name].headers, action["append_rows"])
+                client.append_tab_rows(tab_name, active_contract.tabs[tab_name].headers, action["append_rows"])
                 continue
             if action["existing_rows"] == action["final_rows"] and tab_name not in invalid_tabs:
                 skipped_noop_tabs.append(tab_name)
@@ -1611,17 +1822,17 @@ def main(argv: list[str] | None = None) -> int:
             _publish_rewrite_tab(
                 client,
                 tab_name,
-                contract.tabs[tab_name].headers,
+                active_contract.tabs[tab_name].headers,
                 action["final_rows"],
             )
         report["skipped_noop_tabs"] = skipped_noop_tabs
-        report["ui_applied_tabs"] = client.apply_contract_ui(contract)
+        report["ui_applied_tabs"] = client.apply_contract_ui(active_contract)
         report["write_applied"] = True
         report["visibility_published"] = True
         report["after_layout_report"] = validate_contract_layout(
-            contract=contract,
+            contract=active_contract,
             sheet_names=client.get_sheet_names(),
-            header_rows=client.get_header_rows(list(contract.tabs)),
+            header_rows=client.get_header_rows(list(active_contract.tabs)),
         )
     else:
         report["ui_applied_tabs"] = []
@@ -1634,7 +1845,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Layout OK before write: {layout_report['ok']}")
     print(f"Same-day preserve: {report['same_day_preserve']}")
     print(f"Rollover: {report['rollover']}")
-    for tab_name in contract.tabs:
+    for tab_name in active_contract.tabs:
         counts = tab_counts[tab_name]
         print(
             f"  {tab_name}: fresh={counts['fresh_rows']} existing={counts['existing_rows']} "

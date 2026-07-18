@@ -17,8 +17,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_LEGACY_V3,
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
+    contract_for_ownership_mode,
+    detect_board_ownership_layout,
+    extract_rows_from_matrix,
     extract_rows_with_positions_from_matrix,
     load_ops_board_contract,
+    resolve_effective_board_state,
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
@@ -54,7 +61,7 @@ DB_PATH = PROJECT_ROOT / "db" / "app.db"
 READY_DEBOUNCE_STATE_PATH = DEFAULT_READY_DEBOUNCE_STATE_PATH
 AUTO_PROBABLE_AUDIT_ROOT = PROJECT_ROOT / "exports" / "google_ops_board" / "auto_probable_fill"
 IDENTITY_SYNC_WRITE_ENV_GATE = "ENABLE_KASPI_WORKBOOK_MAP_SYNC"
-AUTO_READY_SET_BY = "AUTO_CLOSEOUT_1857"
+AUTO_READY_SET_BY = "AUTO_CLOSEOUT_FALLBACK"
 AUTO_PROBABLE_FILL_ENV = "AB_GOOGLE_OPS_BOARD_ALLOW_AUTO_PROBABLE_FILL"
 WATCH_READY_SET_BY = "READY_WATCHER"
 
@@ -175,10 +182,27 @@ def _revalidate_watch_mutation(
     allow_fresh_blank_ready: bool = False,
 ) -> tuple[bool, dict[str, object], dict[str, object]]:
     """Re-read the local halt barrier immediately before a watcher side effect."""
-    headers = contract.tabs["Run_Control"].headers
+    run_matrix = client.get_tab_values("Run_Control")
+    sales_matrix = client.get_tab_values("SalesRaw_Today")
+    layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(run_matrix[0]) if run_matrix else [],
+            "SalesRaw_Today": list(sales_matrix[0]) if sales_matrix else [],
+        }
+    )
+    if layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return False, {}, {
+            "blocked": True,
+            "reason": "PARTIAL_BOARD_OWNERSHIP_LAYOUT",
+            "ownership_mode": OWNERSHIP_MODE_PARTIAL,
+        }
+    active_contract = contract_for_ownership_mode(
+        contract, layout["ownership_mode"]
+    )
+    headers = active_contract.tabs["Run_Control"].headers
     rows = extract_rows_with_positions_from_matrix(
         headers,
-        client.get_tab_values("Run_Control"),
+        run_matrix,
     )
     selected = next(
         (
@@ -191,16 +215,28 @@ def _revalidate_watch_mutation(
     if selected is None:
         return False, {}, {"blocked": True, "reason": "RUN_CONTROL_TARGET_MISSING"}
     row = dict(selected["row"])
+    if layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        row = dict(
+            resolve_effective_board_state(
+                salesraw_rows=[],
+                run_control_row=row,
+                target_date=target_date.isoformat(),
+            )["effective_run_control_row"]
+        )
     gate = evaluate_closeout_halt_barrier(
         target_date=target_date,
         run_control_row=row,
         request_ready_set_at=_clean(row.get("ready_set_at")),
+        request_ready_source=_clean(row.get("ready_source")),
         now=now,
     )
     allowed = not bool(gate.get("blocked"))
     if allow_fresh_blank_ready and gate.get("allow_fresh_blank_ready"):
         allowed = True
-    return allowed, {**selected, "row": row}, gate
+    return allowed, {**selected, "row": row}, {
+        **gate,
+        "ownership_mode": layout["ownership_mode"],
+    }
 
 
 def _mark_recoverable_ready_block(
@@ -272,6 +308,8 @@ def _stamp_blank_ready_identity(
         return row
     if _clean(row.get("ready_set_at")):
         return row
+    if _clean(row.get("employee_ready_observed_at")):
+        return row
     allowed, selected, gate = _revalidate_watch_mutation(
         client=client,
         contract=contract,
@@ -287,15 +325,80 @@ def _stamp_blank_ready_identity(
         return row
     if _clean(row.get("ready_set_at")):
         return row
-    row["ready_set_at"] = now.isoformat()
-    if not _clean(row.get("ready_set_by")):
-        row["ready_set_by"] = WATCH_READY_SET_BY
-    client.update_tab_rows(
-        "Run_Control",
-        headers,
-        [{"sheet_row": int(selected["sheet_row"]), "row": row}],
-    )
+    if _clean(row.get("employee_ready_observed_at")):
+        return row
+    ownership_mode = _clean(gate.get("ownership_mode"))
+    if ownership_mode == OWNERSHIP_MODE_SPLIT_V1:
+        client.update_cells(
+            [
+                _cell_update(
+                    "Run_Control",
+                    headers,
+                    int(selected["sheet_row"]),
+                    "employee_ready_observed_at",
+                    now.isoformat(),
+                )
+            ]
+        )
+        row["employee_ready_observed_at"] = now.isoformat()
+    else:
+        legacy_headers = contract_for_ownership_mode(
+            contract, OWNERSHIP_MODE_LEGACY_V3
+        ).tabs["Run_Control"].headers
+        row["ready_set_at"] = now.isoformat()
+        if not _clean(row.get("ready_set_by")):
+            row["ready_set_by"] = WATCH_READY_SET_BY
+        client.update_tab_rows(
+            "Run_Control",
+            legacy_headers,
+            [{"sheet_row": int(selected["sheet_row"]), "row": row}],
+        )
     return row
+
+
+def _clear_employee_ready_observation_on_hold(
+    *,
+    client: GoogleOpsBoardClient,
+    contract,
+    target_date: date,
+) -> bool:
+    """Clear the watcher timestamp only after an exact split-v1 HOLD read."""
+    run_matrix = client.get_tab_values("Run_Control")
+    sales_matrix = client.get_tab_values("SalesRaw_Today")
+    layout = _split_layout_from_matrices(
+        salesraw_matrix=sales_matrix,
+        run_control_matrix=run_matrix,
+    )
+    if layout["ownership_mode"] != OWNERSHIP_MODE_SPLIT_V1:
+        return False
+    headers = contract.tabs["Run_Control"].headers
+    selected = next(
+        (
+            entry
+            for entry in extract_rows_with_positions_from_matrix(headers, run_matrix)
+            if _clean(entry["row"].get("target_date")) == target_date.isoformat()
+        ),
+        None,
+    )
+    if selected is None:
+        return False
+    row = dict(selected["row"])
+    if _clean(row.get("ready_for_closeout")).upper() != "HOLD":
+        return False
+    if not _clean(row.get("employee_ready_observed_at")):
+        return False
+    client.update_cells(
+        [
+            _cell_update(
+                "Run_Control",
+                headers,
+                int(selected["sheet_row"]),
+                "employee_ready_observed_at",
+                "",
+            )
+        ]
+    )
+    return True
 
 
 def _derive_auto_fill_size(*, row: dict[str, object], db_row: dict[str, object], db_path: Path) -> tuple[str, str]:
@@ -320,6 +423,8 @@ def _write_auto_probable_audit(
     now,
     applied_rows: list[dict[str, str]],
     unresolved_rows: list[dict[str, object]],
+    ownership_mode: str = "legacy_v3",
+    resolved_ready_source: str = "",
 ) -> Path | None:
     if not applied_rows and not unresolved_rows:
         return None
@@ -332,8 +437,14 @@ def _write_auto_probable_audit(
             "generated_at": now.isoformat(),
             "policy": (
                 f"{auto_probable_closeout_time_label()} copy-only autofill from visible "
-                "PROBABLE_SIZE for unresolved MY_SIZE values"
+                + (
+                    "PROBABLE_SIZE into AUTO_SIZE_SUGGESTION"
+                    if ownership_mode == OWNERSHIP_MODE_SPLIT_V1
+                    else "PROBABLE_SIZE for unresolved MY_SIZE values"
+                )
             ),
+            "ownership_mode": ownership_mode,
+            "resolved_ready_source": resolved_ready_source,
             "applied_count": len(applied_rows),
             "unresolved_count": len(unresolved_rows),
             "applied_rows": applied_rows,
@@ -350,10 +461,12 @@ def _enqueue_auto_prepare_warning(
 ) -> bool:
     applied_rows = list(auto_prepare.get("applied_rows") or [])
     ready_auto_stamped = bool(auto_prepare.get("run_control_updated"))
+    split_mode = _clean(auto_prepare.get("ownership_mode")) == OWNERSHIP_MODE_SPLIT_V1
     if not applied_rows and not ready_auto_stamped:
         return False
     applied_values = [
-        f"{_clean(row.get('OrderID'))}={_clean(row.get('MY_SIZE'))}"
+        f"{_clean(row.get('OrderID'))}="
+        f"{_clean(row.get('AUTO_SIZE_SUGGESTION') or row.get('MY_SIZE'))}"
         for row in applied_rows
     ]
     enqueue_alert(
@@ -361,13 +474,408 @@ def _enqueue_auto_prepare_warning(
         lines=[
             f"Target date: {target_date.isoformat()}",
             f"Fire time: {auto_probable_closeout_time_label()} Asia/Almaty",
-            "Auto-filled order IDs: " + (", ".join(applied_values) if applied_values else "none"),
-            f"READY auto-stamped: {'yes' if ready_auto_stamped else 'no'}",
+            (
+                "AUTO_SIZE_SUGGESTION writes: "
+                if split_mode
+                else "Auto-filled order IDs: "
+            )
+            + (", ".join(applied_values) if applied_values else "none"),
+            (
+                f"Auto READY marker written: {'yes' if ready_auto_stamped else 'no'}"
+                if split_mode
+                else f"READY auto-stamped: {'yes' if ready_auto_stamped else 'no'}"
+            ),
         ],
         severity="WARN",
         dedup_key=f"google-ops-board-auto-prepare:{target_date.isoformat()}",
     )
     return True
+
+
+def _split_layout_from_matrices(
+    *,
+    salesraw_matrix: list[list[object]],
+    run_control_matrix: list[list[object]],
+) -> dict[str, object]:
+    return detect_board_ownership_layout(
+        {
+            "SalesRaw_Today": list(salesraw_matrix[0]) if salesraw_matrix else [],
+            "Run_Control": list(run_control_matrix[0]) if run_control_matrix else [],
+        }
+    )
+
+
+def _maybe_auto_prepare_split_closeout(
+    *,
+    client: GoogleOpsBoardClient,
+    contract,
+    db_path: Path,
+    target_date: date,
+    now,
+    salesraw_matrix: list[list[object]],
+    run_control_matrix: list[list[object]],
+) -> dict[str, object]:
+    salesraw_headers = contract.tabs["SalesRaw_Today"].headers
+    run_control_headers = contract.tabs["Run_Control"].headers
+    sales_entries = extract_rows_with_positions_from_matrix(
+        salesraw_headers, salesraw_matrix
+    )
+    run_entries = extract_rows_with_positions_from_matrix(
+        run_control_headers, run_control_matrix
+    )
+    target_iso = target_date.isoformat()
+    selected = next(
+        (
+            entry
+            for entry in run_entries
+            if _clean(entry["row"].get("target_date")) == target_iso
+        ),
+        None,
+    )
+    if selected is None:
+        return {
+            "cutoff_reached": True,
+            "ownership_mode": OWNERSHIP_MODE_SPLIT_V1,
+            "target_date_match": False,
+            "salesraw_updates_applied": 0,
+            "applied_rows": [],
+            "run_control_updated": False,
+            "blank_rows_remaining": [],
+            "blocked_reason": "Run_Control has no exact target-date row; no Sheet write performed",
+        }
+    if _clean(selected["row"].get("ready_for_closeout")).upper() == "HOLD":
+        return {
+            "cutoff_reached": True,
+            "ownership_mode": OWNERSHIP_MODE_SPLIT_V1,
+            "target_date_match": True,
+            "salesraw_updates_applied": 0,
+            "applied_rows": [],
+            "run_control_updated": False,
+            "blank_rows_remaining": [],
+            "blocked_reason": "EMPLOYEE_HOLD_VETO",
+        }
+
+    enabled_store_codes = {
+        normalize_store_code(value) for value in load_sync_enabled_kaspi_store_codes()
+    }
+    if load_storeb_packing_excluded(warn=lambda _message: None):
+        enabled_store_codes.discard("STOREB")
+    scoped_entries = [
+        entry
+        for entry in sales_entries
+        if _auto_fill_row_is_in_scope(
+            dict(entry["row"]),
+            target_date=target_date,
+            enabled_store_codes=enabled_store_codes,
+        )
+    ]
+    visible_ids = {
+        _clean(entry["row"].get("_db_row_id"))
+        for entry in scoped_entries
+        if _clean(entry["row"].get("_db_row_id"))
+    }
+    db_rows = load_db_rows_for_writeback(db_path, visible_ids)
+    candidates: list[dict[str, object]] = []
+    unresolved_rows: list[dict[str, object]] = []
+    for entry in scoped_entries:
+        row = dict(entry["row"])
+        if _clean(row.get("MY_SIZE")) or _clean(row.get("AUTO_SIZE_SUGGESTION")):
+            continue
+        db_row = db_rows.get(_clean(row.get("_db_row_id"))) or {}
+        resolved_size, resolved_source = _derive_auto_fill_size(
+            row=row, db_row=db_row, db_path=db_path
+        )
+        if not resolved_size:
+            unresolved_rows.append(
+                {
+                    "_db_row_id": _clean(row.get("_db_row_id")),
+                    "OrderID": _clean(row.get("OrderID")),
+                    "STORE_NAME": _clean(row.get("STORE_NAME")),
+                    "PROBABLE_SIZE": _clean(row.get("PROBABLE_SIZE")),
+                    "reason": resolved_source,
+                }
+            )
+            continue
+        candidates.append(
+            {
+                "sheet_row": int(entry["sheet_row"]),
+                "_db_row_id": _clean(row.get("_db_row_id")),
+                "OrderID": _clean(row.get("OrderID")),
+                "AUTO_SIZE_SUGGESTION": resolved_size,
+                "source": resolved_source,
+            }
+        )
+
+    applied_rows: list[dict[str, str]] = []
+    if candidates:
+        fresh_sales = client.get_tab_values("SalesRaw_Today")
+        fresh_run = client.get_tab_values("Run_Control")
+        layout = _split_layout_from_matrices(
+            salesraw_matrix=fresh_sales, run_control_matrix=fresh_run
+        )
+        if layout["ownership_mode"] != OWNERSHIP_MODE_SPLIT_V1:
+            return {
+                "cutoff_reached": True,
+                "ownership_mode": layout["ownership_mode"],
+                "layout_error": layout,
+                "salesraw_updates_applied": 0,
+                "applied_rows": [],
+                "run_control_updated": False,
+                "blank_rows_remaining": unresolved_rows,
+                "blocked_reason": "OWNERSHIP_LAYOUT_CHANGED_BEFORE_SUGGESTION_WRITE",
+            }
+        fresh_run_entries = extract_rows_with_positions_from_matrix(
+            run_control_headers, fresh_run
+        )
+        fresh_selected = next(
+            (
+                entry
+                for entry in fresh_run_entries
+                if _clean(entry["row"].get("target_date")) == target_iso
+            ),
+            None,
+        )
+        if fresh_selected is None:
+            return {
+                "cutoff_reached": True,
+                "ownership_mode": OWNERSHIP_MODE_SPLIT_V1,
+                "salesraw_updates_applied": 0,
+                "applied_rows": [],
+                "run_control_updated": False,
+                "blank_rows_remaining": unresolved_rows,
+                "blocked_reason": "RUN_CONTROL_TARGET_MISSING_BEFORE_SUGGESTION_WRITE",
+            }
+        gate = evaluate_closeout_halt_barrier(
+            target_date=target_date,
+            run_control_row=dict(fresh_selected["row"]),
+            request_ready_set_at=_clean(fresh_selected["row"].get("ready_set_at")),
+            now=now,
+        )
+        if gate.get("blocked") or _clean(
+            fresh_selected["row"].get("ready_for_closeout")
+        ).upper() == "HOLD":
+            return {
+                "cutoff_reached": True,
+                "ownership_mode": OWNERSHIP_MODE_SPLIT_V1,
+                "salesraw_updates_applied": 0,
+                "applied_rows": [],
+                "run_control_updated": False,
+                "blank_rows_remaining": unresolved_rows,
+                "blocked_reason": (
+                    "EMPLOYEE_HOLD_VETO"
+                    if _clean(fresh_selected["row"].get("ready_for_closeout")).upper()
+                    == "HOLD"
+                    else f"local_halt_barrier:{_clean(gate.get('reason'))}"
+                ),
+            }
+        fresh_sales_by_row = {
+            int(entry["sheet_row"]): dict(entry["row"])
+            for entry in extract_rows_with_positions_from_matrix(
+                salesraw_headers, fresh_sales
+            )
+        }
+        cell_updates: list[dict[str, object]] = []
+        for candidate in candidates:
+            sheet_row = int(candidate["sheet_row"])
+            fresh_row = fresh_sales_by_row.get(sheet_row) or {}
+            if _clean(fresh_row.get("OrderID")) != _clean(candidate.get("OrderID")):
+                unresolved_rows.append(
+                    {
+                        "_db_row_id": _clean(candidate.get("_db_row_id")),
+                        "OrderID": _clean(candidate.get("OrderID")),
+                        "reason": "ROW_IDENTITY_CHANGED_BEFORE_AUTO_SUGGESTION",
+                    }
+                )
+                continue
+            if _clean(fresh_row.get("MY_SIZE")) or _clean(
+                fresh_row.get("AUTO_SIZE_SUGGESTION")
+            ):
+                continue
+            cell_updates.append(
+                _cell_update(
+                    "SalesRaw_Today",
+                    salesraw_headers,
+                    sheet_row,
+                    "AUTO_SIZE_SUGGESTION",
+                    candidate["AUTO_SIZE_SUGGESTION"],
+                )
+            )
+            applied_rows.append(
+                {
+                    "_db_row_id": _clean(candidate.get("_db_row_id")),
+                    "OrderID": _clean(candidate.get("OrderID")),
+                    "AUTO_SIZE_SUGGESTION": _clean(
+                        candidate.get("AUTO_SIZE_SUGGESTION")
+                    ),
+                    "source": _clean(candidate.get("source")),
+                }
+            )
+        client.update_cells(cell_updates)
+
+    fresh_sales = client.get_tab_values("SalesRaw_Today")
+    fresh_run = client.get_tab_values("Run_Control")
+    layout = _split_layout_from_matrices(
+        salesraw_matrix=fresh_sales, run_control_matrix=fresh_run
+    )
+    if layout["ownership_mode"] != OWNERSHIP_MODE_SPLIT_V1:
+        return {
+            "cutoff_reached": True,
+            "ownership_mode": layout["ownership_mode"],
+            "layout_error": layout,
+            "salesraw_updates_applied": len(applied_rows),
+            "applied_rows": applied_rows,
+            "run_control_updated": False,
+            "blank_rows_remaining": unresolved_rows,
+            "blocked_reason": "OWNERSHIP_LAYOUT_CHANGED_BEFORE_AUTO_READY_WRITE",
+        }
+    fresh_run_entries = extract_rows_with_positions_from_matrix(
+        run_control_headers, fresh_run
+    )
+    selected = next(
+        (
+            entry
+            for entry in fresh_run_entries
+            if _clean(entry["row"].get("target_date")) == target_iso
+        ),
+        None,
+    )
+    if selected is None:
+        return {
+            "cutoff_reached": True,
+            "ownership_mode": OWNERSHIP_MODE_SPLIT_V1,
+            "salesraw_updates_applied": len(applied_rows),
+            "applied_rows": applied_rows,
+            "run_control_updated": False,
+            "blank_rows_remaining": unresolved_rows,
+            "blocked_reason": "RUN_CONTROL_TARGET_MISSING_BEFORE_AUTO_READY_WRITE",
+        }
+    resolution = resolve_effective_board_state(
+        salesraw_rows=extract_rows_from_matrix(salesraw_headers, fresh_sales),
+        run_control_row=dict(selected["row"]),
+        target_date=target_iso,
+    )
+    effective_rows_by_id = {
+        _clean(row.get("_db_row_id")): row
+        for row in resolution["effective_salesraw_rows"]
+    }
+    effective_unresolved: list[dict[str, object]] = list(unresolved_rows)
+    for entry in scoped_entries:
+        row_id = _clean(entry["row"].get("_db_row_id"))
+        effective = effective_rows_by_id.get(row_id) or {}
+        effective_size = _clean(effective.get("effective_size"))
+        db_row = db_rows.get(row_id) or {}
+        product_type = _clean(db_row.get("product_type")) or "CL"
+        if not effective_size:
+            if not any(_clean(item.get("_db_row_id")) == row_id for item in effective_unresolved):
+                effective_unresolved.append(
+                    {
+                        "_db_row_id": row_id,
+                        "OrderID": _clean(entry["row"].get("OrderID")),
+                        "reason": "MISSING_EFFECTIVE_SIZE",
+                    }
+                )
+        elif not normalize_size(effective_size, product_type=product_type):
+            effective_unresolved.append(
+                {
+                    "_db_row_id": row_id,
+                    "OrderID": _clean(entry["row"].get("OrderID")),
+                    "reason": "INVALID_EFFECTIVE_SIZE",
+                    "effective_size_source": _clean(
+                        effective.get("effective_size_source")
+                    ),
+                }
+            )
+
+    run_control_updated = False
+    raw_control = dict(resolution["raw_run_control_row"])
+    if not effective_unresolved and not _clean(raw_control.get("ready_for_closeout")):
+        gate = evaluate_closeout_halt_barrier(
+            target_date=target_date,
+            run_control_row=raw_control,
+            request_ready_set_at="",
+            now=now,
+        )
+        if not gate.get("blocked") and _clean(
+            raw_control.get("auto_ready_for_closeout")
+        ).upper() != "READY":
+            stamp_now = now_almaty()
+            sheet_row = int(selected["sheet_row"])
+            auto_label = auto_probable_closeout_time_label().replace(":", "")
+            note = _append_note(
+                raw_control.get("notes"),
+                f"AUTO_{auto_label} suggestion fallback: {len(applied_rows)} row(s)",
+            )
+            client.update_cells(
+                [
+                    _cell_update(
+                        "Run_Control",
+                        run_control_headers,
+                        sheet_row,
+                        "auto_ready_for_closeout",
+                        "READY",
+                    ),
+                    _cell_update(
+                        "Run_Control",
+                        run_control_headers,
+                        sheet_row,
+                        "auto_ready_set_by",
+                        AUTO_READY_SET_BY,
+                    ),
+                    _cell_update(
+                        "Run_Control",
+                        run_control_headers,
+                        sheet_row,
+                        "auto_ready_set_at",
+                        stamp_now.isoformat(),
+                    ),
+                    _cell_update(
+                        "Run_Control",
+                        run_control_headers,
+                        sheet_row,
+                        "notes",
+                        note,
+                    ),
+                ]
+            )
+            run_control_updated = True
+
+    final_sales = client.get_tab_values("SalesRaw_Today")
+    final_run = client.get_tab_values("Run_Control")
+    final_run_rows = extract_rows_from_matrix(run_control_headers, final_run)
+    final_control = next(
+        (
+            row
+            for row in final_run_rows
+            if _clean(row.get("target_date")) == target_iso
+        ),
+        {},
+    )
+    final_resolution = resolve_effective_board_state(
+        salesraw_rows=extract_rows_from_matrix(salesraw_headers, final_sales),
+        run_control_row=final_control,
+        target_date=target_iso,
+    )
+    audit_path = _write_auto_probable_audit(
+        target_date=target_date,
+        now=now,
+        applied_rows=applied_rows,
+        unresolved_rows=effective_unresolved,
+        ownership_mode=OWNERSHIP_MODE_SPLIT_V1,
+        resolved_ready_source=_clean(final_resolution.get("ready_source")),
+    )
+    return {
+        "cutoff_reached": True,
+        "ownership_mode": OWNERSHIP_MODE_SPLIT_V1,
+        "target_date_match": True,
+        "salesraw_updates_applied": len(applied_rows),
+        "applied_rows": applied_rows,
+        "audit_path": str(audit_path) if audit_path else "",
+        "run_control_updated": run_control_updated,
+        "blank_rows_remaining": effective_unresolved,
+        "resolution_events": final_resolution["resolution_events"],
+        "resolved_ready_source": final_resolution["ready_source"],
+        "employee_ready_freeze": False,
+    }
 
 
 def _maybe_auto_prepare_closeout(
@@ -389,13 +897,45 @@ def _maybe_auto_prepare_closeout(
 
     salesraw_headers = contract.tabs["SalesRaw_Today"].headers
     run_control_headers = contract.tabs["Run_Control"].headers
+    salesraw_matrix = client.get_tab_values("SalesRaw_Today")
+    run_control_matrix = client.get_tab_values("Run_Control")
+    ownership_layout = _split_layout_from_matrices(
+        salesraw_matrix=salesraw_matrix,
+        run_control_matrix=run_control_matrix,
+    )
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return {
+            "cutoff_reached": True,
+            "ownership_mode": OWNERSHIP_MODE_PARTIAL,
+            "layout_error": ownership_layout,
+            "salesraw_updates_applied": 0,
+            "applied_rows": [],
+            "run_control_updated": False,
+            "blank_rows_remaining": [],
+            "blocked_reason": "PARTIAL_BOARD_OWNERSHIP_LAYOUT",
+        }
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        return _maybe_auto_prepare_split_closeout(
+            client=client,
+            contract=contract,
+            db_path=db_path,
+            target_date=target_date,
+            now=now,
+            salesraw_matrix=salesraw_matrix,
+            run_control_matrix=run_control_matrix,
+        )
+    legacy_contract = contract_for_ownership_mode(
+        contract, OWNERSHIP_MODE_LEGACY_V3
+    )
+    salesraw_headers = legacy_contract.tabs["SalesRaw_Today"].headers
+    run_control_headers = legacy_contract.tabs["Run_Control"].headers
     salesraw_rows_with_positions = extract_rows_with_positions_from_matrix(
         salesraw_headers,
-        client.get_tab_values("SalesRaw_Today"),
+        salesraw_matrix,
     )
     run_control_rows_with_positions = extract_rows_with_positions_from_matrix(
         run_control_headers,
-        client.get_tab_values("Run_Control"),
+        run_control_matrix,
     )
 
     target_iso = target_date.isoformat()
@@ -690,6 +1230,15 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if (
+        fast_ready_value == "HOLD"
+        and _clean((fast_row or {}).get("employee_ready_observed_at"))
+    ):
+        _clear_employee_ready_observation_on_hold(
+            client=client,
+            contract=contract,
+            target_date=target_date,
+        )
     if fast_row is not None and fast_ready_value != "READY" and not fallback_due:
         clear_ready_debounce_state(READY_DEBOUNCE_STATE_PATH)
         print("Google Ops Board early-closeout watch: Run_Control is HOLD; lightweight poll complete.")
@@ -702,6 +1251,7 @@ def main() -> int:
         target_date=target_date,
         run_control_row=completion_row,
         request_ready_set_at=_clean(completion_row.get("ready_set_at")),
+        request_ready_source=_clean(completion_row.get("ready_source")),
         now=barrier_now,
     )
     if halt_gate.get("allow_fresh_blank_ready"):
@@ -721,6 +1271,7 @@ def main() -> int:
             target_date=target_date,
             run_control_row=completion_row,
             request_ready_set_at=_clean(completion_row.get("ready_set_at")),
+            request_ready_source=_clean(completion_row.get("ready_source")),
             now=barrier_now,
         )
     if halt_gate["blocked"]:
@@ -887,6 +1438,8 @@ def main() -> int:
         )
         if (
             not fresh_readiness["ready"]
+            or _clean(fresh_readiness.get("ready_source"))
+            != _clean(readiness.get("ready_source"))
             or _clean(fresh_readiness.get("ready_set_at"))
             != _clean(readiness.get("ready_set_at"))
         ):
@@ -908,15 +1461,20 @@ def main() -> int:
                 f"before launch ({_clean(launch_gate.get('reason'))}); skipping."
             )
             return 0
+        command = [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--expected-target-date",
+            target_date.isoformat(),
+            "--expected-ready-set-at",
+            _clean(fresh_readiness.get("ready_set_at")),
+        ]
+        if _clean(fresh_readiness.get("ready_source")):
+            command.extend(
+                ["--expected-ready-source", _clean(fresh_readiness.get("ready_source"))]
+            )
         result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_PATH),
-                "--expected-target-date",
-                target_date.isoformat(),
-                "--expected-ready-set-at",
-                _clean(fresh_readiness.get("ready_set_at")),
-            ],
+            command,
             cwd=str(PROJECT_ROOT),
             env=env,
         )
@@ -929,6 +1487,7 @@ def main() -> int:
         now=local_now,
         ready=True,
         ready_set_at=_clean(readiness.get("ready_set_at")),
+        ready_source=_clean(readiness.get("ready_source")),
         debounce_seconds=ready_debounce_seconds,
     )
     action = str(debounce["action"])
@@ -956,6 +1515,8 @@ def main() -> int:
     )
     if (
         not fresh_readiness["ready"]
+        or _clean(fresh_readiness.get("ready_source"))
+        != _clean(readiness.get("ready_source"))
         or _clean(fresh_readiness.get("ready_set_at"))
         != _clean(readiness.get("ready_set_at"))
     ):
@@ -979,15 +1540,20 @@ def main() -> int:
             f"before launch ({_clean(launch_gate.get('reason'))}); skipping."
         )
         return 0
+    command = [
+        sys.executable,
+        str(SCRIPT_PATH),
+        "--expected-target-date",
+        target_date.isoformat(),
+        "--expected-ready-set-at",
+        _clean(fresh_readiness.get("ready_set_at")),
+    ]
+    if _clean(fresh_readiness.get("ready_source")):
+        command.extend(
+            ["--expected-ready-source", _clean(fresh_readiness.get("ready_source"))]
+        )
     result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT_PATH),
-            "--expected-target-date",
-            target_date.isoformat(),
-            "--expected-ready-set-at",
-            _clean(fresh_readiness.get("ready_set_at")),
-        ],
+        command,
         cwd=str(PROJECT_ROOT),
         env=env,
     )

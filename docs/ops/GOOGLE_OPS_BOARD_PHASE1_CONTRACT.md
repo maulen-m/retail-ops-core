@@ -9,6 +9,8 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - Excel CRM is no longer the daily employee intermediary.
 - `HEIGHT` and `WEIGHT` are employee-entered customer parameters on the daily board.
 - `MY_SIZE` is employee-entered observed size only.
+- `AUTO_SIZE_SUGGESTION` is a visible watcher-owned fallback suggestion. It is
+  never an employee answer and never authorizes overwriting `MY_SIZE`.
 - `PROBABLE_SIZE` is computed in Python/DB only and published as a value, never as a Google Sheets formula.
 
 ## Canonical Entrypoints
@@ -31,14 +33,39 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
 - `excel_ui/run_google_ops_board_closeout.command`
 
 ## Canonical Tabs and Ownership
+- Contract version `4` uses write-ownership mode `split_v1` when every required
+  appended column is present on the actual Board.
 - Primary editable surface: `SalesRaw_Today`
 - Employee-editable columns: `SalesRaw_Today.HEIGHT`, `SalesRaw_Today.WEIGHT`, and `SalesRaw_Today.MY_SIZE`
+- `SalesRaw_Today.AUTO_SIZE_SUGGESTION` is appended after
+  `ExpressDeliveryStatus`; it is visible, protected, and owned only by the
+  closeout watcher.
+- Existing-row publishes are cell-sparse by ownership. A publisher may send
+  only publisher-owned cells and must never include employee-owned or
+  watcher-owned cells in an existing-row request. A genuinely new row may be
+  appended as a complete row.
 - Explicit closeout control surface: `Run_Control`
-- `Run_Control.ready_for_closeout` accepts only `HOLD` or `READY`
-- immutable `READY` request identity is `target_date + ready_set_at`
-- when a new unambiguous `READY` has blank `ready_set_at`, the watcher stamps it exactly once
-- automation must never restamp an existing `ready_set_at`
+- `Run_Control.ready_for_closeout` is employee-owned and accepts blank,
+  `HOLD`, or `READY`; blank means no employee decision and `HOLD` is an
+  explicit employee veto.
+- A new v4 target-date row starts with blank `ready_for_closeout`. Migration
+  never clears a legacy `HOLD`.
+- `Run_Control.ready_set_by` and `Run_Control.ready_set_at` are preserved
+  employee or authenticated-human-request identity cells. Unattended
+  automation never writes them.
+- The appended protected watcher-owned Run_Control fields, in order, are
+  `employee_ready_observed_at`, `auto_ready_for_closeout`,
+  `auto_ready_set_by`, and `auto_ready_set_at`.
+- When a new unambiguous employee `READY` has blank `ready_set_at`, the watcher
+  writes only `employee_ready_observed_at` exactly once. It clears that
+  observation only after observing employee `HOLD`, then may stamp a later
+  employee READY transition.
+- immutable effective request identity is
+  `target_date + ready_source + ready_set_at`
 - a legacy blank-identity `READY` with prior closeout or delivery evidence is ambiguous and must fail closed
+- Actual headers select the compatibility mode: none of the five appended
+  ownership columns is `legacy_v3`; all five is `split_v1`; any partial layout
+  fails closed before auto-prepare or closeout writes.
 - Workbook tab order must start with:
   - `SalesRaw_Today`
   - `Run_Control`
@@ -68,16 +95,16 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - command: `/usr/bin/caffeinate -dimsu -t 4200`
 - `config/com.example.google-ops-board-closeout-watch.plist`
   - every `60` seconds, with script-gated watch window `09:00` to `24:00`
-  - HOLD performs only the target-date Run_Control read and returns before SalesRaw, DB, manifest, ledger, or subprocess work, except when the explicitly enabled `18:57` fallback is due
+  - employee HOLD performs only the target-date Run_Control read and returns before SalesRaw, DB, manifest, ledger, or subprocess work, including when the fallback is due
   - an absent target-date Run_Control row also fails closed immediately after that one tab read; absence must not fall through to SalesRaw, DB, obligation, manifest, ledger, or subprocess work
-  - if `Run_Control` is green early, arm a `60` second READY debounce
+  - if the resolved effective request is green early, arm a `60` second READY debounce using the complete canonical identity
   - start closeout only if the board is still green after that debounce
-  - at `18:57`, if any `SalesRaw_Today.MY_SIZE` rows are still blank:
-    - fill only those blank rows from visible, valid `PROBABLE_SIZE`
+  - at the configured fallback time, operationally `19:45`, if any effective size is still blank:
+    - copy visible, valid `PROBABLE_SIZE` only into blank `AUTO_SIZE_SUGGESTION` cells whose employee `MY_SIZE` is blank
     - never derive a new hidden size at closeout time; blank or invalid `PROBABLE_SIZE` remains unresolved and blocks closeout
-    - preserve all manual `MY_SIZE` entries already entered by the employee or owner
-    - auto-set `Run_Control.ready_for_closeout = READY`
-    - trigger closeout immediately without waiting for manual READY input
+    - never send `MY_SIZE`, `ready_for_closeout`, `ready_set_by`, or `ready_set_at` in the unattended watcher request
+    - when every resolved effective size is valid and employee intent remains blank, set only `auto_ready_for_closeout = READY`, `auto_ready_set_by = AUTO_CLOSEOUT_FALLBACK`, and `auto_ready_set_at`
+    - re-read, resolve employee-first, and launch only the winning canonical identity
 - `config/com.example.waybill-telegram-control.plist`
   - every `60` seconds
   - Telegram fallback control for `/status`, `/delivery_status`, `/ready`, `/resume_delivery`, `/final_table`, and `/halt`
@@ -85,7 +112,7 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - `/resume_delivery` resumes closeout only when the sizing gate is green, delivery is not already ledger-complete, and the checkpoint-pinned Telegram ledger is present and valid
   - `/final_table` is status-only: it resends the Telegram final totals table from the existing manifest/ledger, does not resend PDFs, does not start closeout, and intentionally does not enforce the sizing gate
   - `/halt` atomically persists `runtime/state/google_ops_board_closeout_halt_barrier.json` before attempting the Google `HOLD` write, then clears pending debounce; watcher, scheduler, and in-flight closeout must honor that local barrier even if the Sheet write/readback fails
-  - proven exact `HOLD` readback retains the stop barrier against automatic re-arming; only a subsequent explicit READY transition may supersede it. A blank READY may receive its one-time watcher identity stamp only after exact HOLD was proven; otherwise it is stale/ambiguous and remains blocked. An older in-flight `target_date + ready_set_at` remains halted after any newer READY.
+  - proven exact `HOLD` readback retains the stop barrier against automatic re-arming; only a subsequent explicit READY transition may supersede it. A blank-timestamp employee READY may receive its one-time watcher observation stamp only after exact HOLD was proven; otherwise it is stale/ambiguous and remains blocked. An older in-flight `target_date + ready_source + ready_set_at` remains halted after any newer READY.
 - `config/com.example.kaspi-waybill-deadline.plist`
   - `18:30` Google Ops Board closeout backstop
 - `config/com.example.kaspi-shipped-truth-sync.plist`
@@ -125,7 +152,9 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
   offers/articles in one order remain separate board rows even when they resolve
   to the same internal SKU family.
 - The canonical publish scope is the union of fresh source-backed eligible DB rows and unresolved shipping obligations. Same-day `SalesRaw_Today` publish preserves every row in that union. A row may be removed only after fresh exact source truth discharges its obligation; absence from a broad/current-day selector, API failure or uncertainty, malformed or identity-mismatched detail, and internal `SHIPPED`/`COMPLETED` are not removal evidence.
-- Same-day `Run_Control` publishes also use `upsert-preserve` semantics.
+- Same-day `Run_Control` publishes preserve employee- and watcher-owned cells
+  by omitting them from existing-row write requests; client-side merge alone
+  is not a concurrency boundary.
 - Health profiles are explicit and write separate daily artifacts:
   - `full`:
     - DB preflight
@@ -154,8 +183,20 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
     - WhatsApp smoke skipped; canonical health is browser-free
     - report path: `exports/google_ops_board/health/<YYYY-MM-DD>/closeout_health.json`
 - Publish-safe health is mandatory before live Google board writes.
+- Health and every auto-prepare/closeout read boundary detect ownership mode
+  from the actual `SalesRaw_Today` and `Run_Control` headers:
+  - `legacy_v3`: none of the appended ownership columns exists; retain exact
+    legacy behavior and do not claim split-write safety
+  - `split_v1`: all appended ownership columns exist; enforce disjoint writes
+    and employee-first resolution
+  - partial layout: fail closed before auto-prepare or closeout writes
+- Trailing-header migration may append headers and apply protection/UI only. It
+  must not rewrite existing data rows to materialize blank trailing cells.
 - Full closeout health is mandatory before closeout external actions; Telegram config and store context block closeout. Canonical closeout health is browser-free and must not run WhatsApp smoke.
-- The early closeout watcher must not run closeout health directly. It only detects stable READY / `18:57` auto-readiness and launches `scripts/run_google_ops_board_closeout_scheduler.py --resume`.
+- The early closeout watcher must not run closeout health directly. It only
+  detects a stable resolved employee or auto READY identity and launches
+  `scripts/run_google_ops_board_closeout_scheduler.py --resume` with target
+  date, `ready_source`, and `ready_set_at`.
 - `scripts/run_google_ops_board_closeout.py` owns the single closeout health profile immediately before external closeout actions. This avoids duplicate watcher-side health/API/browser churn while keeping the irreversible action gated.
 - Automatic identity sync is limited to the `full` health profile and keyed by workbook fingerprint.
 - Routine `publish` and `closeout` profiles skip workbook identity sync because daily board and shipping truth are DB + Google-board based.
@@ -171,7 +212,10 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
 - A same-day publish must remove only rows whose obligations fresh exact source truth has discharged, plus proven duplicate rows.
 - A same-day publish may append only truly new rows and must append them only at the bottom of the current live block.
 - A same-day publish must append truly new rows only at the bottom of the current live block.
-- A same-day publish may refresh system-owned fields in place while preserving employee-entered `HEIGHT`, `WEIGHT`, and `MY_SIZE`.
+- A same-day publish may refresh publisher-owned fields in place using
+  cell-sparse requests. It must not send employee-owned `HEIGHT`, `WEIGHT`, or
+  `MY_SIZE`, watcher-owned `AUTO_SIZE_SUGGESTION`, or any preserved
+  Run_Control ownership cell for an existing row.
 - The publish scheduler observes live Board parity before publish, then requires a strict post-publish readback proving exact target-date, row-key, row-value, and nonblank-size preservation parity. A successful subprocess exit without that readback is not success.
 - Publish cycles write source snapshots to `exports/google_ops_board/source_snapshots/<YYYY-MM-DD>/source_snapshot.json`.
 - A refresh commit marker that fingerprints the order-entry sidecar, apply receipt, and prewrite DB backup must be read back unchanged by the publish cycle; it must never be overwritten by a weaker workbook-only snapshot.
@@ -181,7 +225,9 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
   - `README`
   - `Config_Do_Not_Edit`
 - next-day rollover must archive the previous board snapshot before resetting operational tabs.
-- next-day rollover must then rebuild the live board from fresh DB truth for the new target day.
+- next-day rollover must then rebuild the live board from fresh DB truth for
+  the new target day; a v4 Run_Control row starts with blank employee and auto
+  request fields.
 - Overdue status is fail-closed and durable:
   - source of truth: the canonical publish-scope union; closeout exact-reads every unresolved obligation before external action
   - every unresolved packable prior obligation remains employee-visible as `OVERDUE`, regardless of age or original cutoff
@@ -201,8 +247,11 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
   - green fill when `MY_SIZE` is filled
 - `SalesRaw_Today` and `Run_Control` are managed protected sheets:
   - `SalesRaw_Today`: only `HEIGHT`, `WEIGHT`, and `MY_SIZE` stay editable for operators
+  - `SalesRaw_Today.AUTO_SIZE_SUGGESTION` is visible and protected
   - `Run_Control`: only `ready_for_closeout` stays editable for operators
-  - `Run_Control` system fields such as `ready_set_by`, `ready_set_at`, `notes`, `last_verified_ready_at`, `last_orchestrator_run_id`, and `last_orchestrator_status` are protected in the UI but preserved by publisher upsert logic so automation can write them
+  - explicit authenticated `/ready` and `/halt` commands are human-request paths and may write employee request cells only while recording the actor
+  - unattended automation status writes are cell-sparse and limited to `notes`, `last_verified_ready_at`, `last_orchestrator_run_id`, and `last_orchestrator_status`
+  - unattended completion or failure never clears employee READY or its human identity
 - `SalesRaw_Today` row order is operator-first:
   - sort by display `STORE_NAME` A-Z
   - then by `OrderID`
@@ -238,7 +287,9 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
 - later quiet publish slots (`11:00` and the `14:01` to `17:11` backstop window) may publish only if the local ActiveOrders source is already fresh for the target date
   - apply gate: `ENABLE_KASPI_ACTIVEORDERS_DB_WRITE=1`
 - Size writeback stays narrow and explicit:
-  - source: `SalesRaw_Today.MY_SIZE`
+  - source: the request-pinned effective size resolved from raw
+    `SalesRaw_Today.MY_SIZE` first, then `AUTO_SIZE_SUGGESTION` only when the
+    employee cell is blank
   - target: `fact_orders_kaspi.assigned_size`
   - selection authority: exact visible `SalesRaw_Today._db_row_id` values, not a planned-date/lookback window
   - apply gate: `ENABLE_GOOGLE_OPS_BOARD_DB_WRITE=1`
@@ -248,11 +299,25 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
   - later writebacks may replace earlier assigned sizes; traceability lives in the per-run backup path plus the old/new values captured in the JSON report
 - Closeout is hybrid-gated and fail-closed:
   - `Run_Control.target_date` must match the operational target date
-  - `Run_Control.ready_for_closeout` must be `READY`
-  - `Run_Control.ready_set_at` must be nonblank and is stamped once for a new unambiguous request
-  - `SalesRaw_Today` must have no blank `MY_SIZE`
+  - a fresh read must resolve effective READY to `READY` with a nonblank
+    `ready_source` and `ready_set_at`
+  - employee `HOLD` vetoes auto READY and emits
+    `AUTO_READY_DISCARDED_EMPLOYEE_HOLD` when both exist
+  - employee READY wins over auto READY and emits
+    `AUTO_READY_DISCARDED_EMPLOYEE_READY` when both exist
+  - any other nonblank employee request value is invalid and blocks without
+    consulting auto fields
+  - every exact `_db_row_id` must have a nonblank effective size; a nonblank
+    employee `MY_SIZE` wins before normalization, so an invalid employee value
+    blocks rather than falling back
   - invalid size values block the run
-- If the board becomes green before `18:57`, the minute-level watcher may trigger closeout immediately after the `60` second READY debounce.
+- The resolver retains raw and effective values, chosen size/READY sources, and
+  structured `resolution_events` in readiness and pinned-scope evidence. The
+  same canonical identity binds readiness, debounce, halt, checkpoint, resume,
+  expected-order construction, completion, and scheduler comparisons.
+- If the board becomes green before the configured fallback time, the
+  minute-level watcher may trigger closeout immediately after the `60` second
+  READY debounce.
 - The watcher must ignore a transient `READY` misclick:
   - first READY detection only arms the debounce
   - the board must remain green for `60` seconds before closeout starts
@@ -263,14 +328,19 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
   - append exact blocking `OrderID` values into `Run_Control.notes`
   - treat the marker as idempotent by status + notes + blocking `OrderID` set; repeated identical blockers must not rewrite `Run_Control`
   - keep watching so the same still-READY row can recover automatically after the employee fixes the sizes
-- At `18:57`, the watcher may bypass manual READY:
-  - fill only blank `MY_SIZE` cells from visible, valid `PROBABLE_SIZE`
+- At the configured fallback time, operationally `19:45`, the watcher may
+  create an auto request only when employee intent is blank:
+  - fill only blank `AUTO_SIZE_SUGGESTION` cells from visible, valid
+    `PROBABLE_SIZE` when employee `MY_SIZE` is blank
   - do not call the size engine or infer a new size during closeout; a blank or invalid `PROBABLE_SIZE` leaves the row unresolved and blocks closeout
   - unresolved rows must carry explicit reason codes: `MISSING_PROBABLE_SIZE` for blank `PROBABLE_SIZE`, `INVALID_PROBABLE_SIZE` for a visible value that fails size normalization
-  - preserve all existing manual `MY_SIZE` values
-  - mark `Run_Control.ready_for_closeout = READY`
-  - trigger closeout immediately if the board is then green
-- The `18:57` probable-size auto-fill must write an audit artifact under `exports/google_ops_board/auto_probable_fill/<YYYY-MM-DD>/`.
+  - preserve all existing manual `MY_SIZE` values and existing auto suggestions
+  - mark only `Run_Control.auto_ready_for_closeout = READY` with
+    `AUTO_CLOSEOUT_FALLBACK` and its timestamp
+  - re-read and trigger only the resolved winning identity if the board is then green
+- The fallback suggestion must write an audit artifact under
+  `exports/google_ops_board/auto_probable_fill/<YYYY-MM-DD>/` using
+  `AUTO_SIZE_SUGGESTION` terminology and recording final resolved READY source.
 - The minute-level watcher must not run health directly; the closeout script delegates browser-free store-context and Telegram checks to `scripts/run_google_ops_board_prewindow_health.py`.
 - After a successful closeout for the target date:
   - later scheduled size writebacks must skip
@@ -282,7 +352,7 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
   - delivery recovery must resume the pinned Telegram ledger through the canonical scheduler; whole-manifest and WhatsApp fallback resends are forbidden
 - Closeout must fail before shipping if active stores are missing token or merchant UID context.
 - The automated closeout path is DB-first:
-  - final size writeback only through a closeout-generated `schema_version = 2` scope bound to exact `target_date + ready_set_at`, enabled-store/order scope, DB row IDs, line keys, and `MY_SIZE` values; the live Sheet must still match every pinned row and size
+  - final size writeback only through a closeout-generated `schema_version = 2` scope bound to exact `target_date + ready_source + ready_set_at`, enabled-store/order scope, DB row IDs, line keys, raw/effective size values, and chosen sources; a fresh live resolution must still match every pinned row, source, and effective size
   - reconcile current source-active orders with the persistent no-expiry shipping-obligation ledger
   - exact-read prior obligations absent from the active selector; uncertainty retains the obligation and blocks closeout
   - narrow exception: when a validated same-day prepacked-exclusion decision declares the exact store/order ID, API/UNKNOWN uncertainty retains that obligation as unresolved, records `obligation_api_uncertain_excluded_scope`, queues a WARN, and is non-blocking only for that declared ID; uncovered uncertainty and identity mismatch remain blocking, while clean physical-handover truth still discharges normally
@@ -300,8 +370,9 @@ and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
 - Closeout maintains a day-level checkpoint under:
   - `exports/google_ops_board/workflow_runs/<YYYY-MM-DD>/closeout_checkpoint.json`
 - Resume is fail-closed:
-  - `run_control_resume_fingerprint` includes `target_date`, `ready_for_closeout`, and `ready_set_at`
-  - immutable request identity is `target_date + ready_set_at`
+  - `run_control_resume_fingerprint` includes `target_date`, effective
+    `ready_for_closeout`, `ready_source`, and `ready_set_at`
+  - immutable request identity is `target_date + ready_source + ready_set_at`
   - only contiguous green stages belonging to the same exact request identity may be reused
   - an exactly completed request skips; an incomplete exact request resumes
   - checkpoints lacking a valid required-orders path/SHA-256 may not reuse shipping or later stages

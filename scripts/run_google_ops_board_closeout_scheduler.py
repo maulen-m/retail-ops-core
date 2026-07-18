@@ -17,8 +17,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
+    detect_board_ownership_layout,
     extract_rows_from_matrix,
     load_ops_board_contract,
+    resolve_effective_board_state,
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
@@ -55,9 +59,17 @@ def _current_ready_identity(
         spreadsheet_id,
         Path(service_account_json),
     )
+    run_matrix = client.get_tab_values("Run_Control")
+    sales_matrix = client.get_tab_values("SalesRaw_Today")
+    layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(run_matrix[0]) if run_matrix else [],
+            "SalesRaw_Today": list(sales_matrix[0]) if sales_matrix else [],
+        }
+    )
     rows = extract_rows_from_matrix(
         contract.tabs["Run_Control"].headers,
-        client.get_tab_values("Run_Control"),
+        run_matrix,
     )
     row = next(
         (
@@ -67,6 +79,30 @@ def _current_ready_identity(
         ),
         {},
     )
+    if layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return {
+            "target_date": _clean(row.get("target_date")),
+            "ready_source": "",
+            "ready_set_at": "",
+            "ready_for_closeout": "PARTIAL_LAYOUT",
+        }
+    if layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        resolution = resolve_effective_board_state(
+            salesraw_rows=extract_rows_from_matrix(
+                contract.tabs["SalesRaw_Today"].headers, sales_matrix
+            ),
+            run_control_row=row,
+            target_date=target_date.isoformat(),
+        )
+        effective = dict(resolution["effective_run_control_row"])
+        return {
+            "target_date": _clean(effective.get("target_date")),
+            "ready_source": _clean(effective.get("ready_source")),
+            "ready_set_at": _clean(effective.get("ready_set_at")),
+            "ready_for_closeout": _clean(
+                effective.get("ready_for_closeout")
+            ).upper(),
+        }
     return {
         "target_date": _clean(row.get("target_date")),
         "ready_set_at": _clean(row.get("ready_set_at")),
@@ -107,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     _LAST_CLOSEOUT_STATE = {}
     parser = argparse.ArgumentParser(description="Identity-bound Google Ops Board closeout launcher")
     parser.add_argument("--expected-target-date", default="")
+    parser.add_argument("--expected-ready-source", default="")
     parser.add_argument("--expected-ready-set-at", default="")
     args = parser.parse_args(argv)
 
@@ -133,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: closeout scheduler refuses a non-today target date", file=sys.stderr)
         return 78
     expected_ready_set_at = _clean(args.expected_ready_set_at)
+    expected_ready_source = _clean(args.expected_ready_source)
 
     ensure_kaspi_api_call_ledger_env(env, target_date=target_date, project_root=PROJECT_ROOT)
     os.environ.setdefault(IDENTITY_SYNC_WRITE_ENV_GATE, env[IDENTITY_SYNC_WRITE_ENV_GATE])
@@ -173,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             and _clean(request_identity.get("ready_set_at"))
         ):
             expected_ready_set_at = _clean(request_identity.get("ready_set_at"))
+            expected_ready_source = _clean(request_identity.get("ready_source"))
             print(
                 "Google Ops Board closeout scheduler: resuming checkpoint-pinned "
                 "incomplete delivery.",
@@ -203,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_date=target_date,
                 run_control_row=current_identity,
                 request_ready_set_at=expected_ready_set_at,
+                request_ready_source=expected_ready_source,
             )
             if halt_gate["blocked"]:
                 print(
@@ -211,11 +251,25 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 0
-            if current_identity != {
+            expected_identity = {
                 "target_date": target_date.isoformat(),
                 "ready_set_at": expected_ready_set_at,
                 "ready_for_closeout": "READY",
-            }:
+            }
+            if "ready_source" in current_identity:
+                expected_identity = {
+                    "target_date": target_date.isoformat(),
+                    "ready_source": expected_ready_source,
+                    "ready_set_at": expected_ready_set_at,
+                    "ready_for_closeout": "READY",
+                }
+                if not expected_ready_source:
+                    print(
+                        "ERROR: split-v1 scheduler launch requires --expected-ready-source",
+                        file=sys.stderr,
+                    )
+                    return 78
+            if current_identity != expected_identity:
                 print(
                     f"ERROR: READY identity changed before scheduler launch: {current_identity}",
                     file=sys.stderr,
@@ -242,6 +296,8 @@ def main(argv: list[str] | None = None) -> int:
                 "--expected-ready-set-at",
                 expected_ready_set_at,
             ]
+            if expected_ready_source:
+                cmd.extend(["--expected-ready-source", expected_ready_source])
             if spreadsheet_id_override:
                 cmd.extend(["--spreadsheet-id", spreadsheet_id_override])
             cmd.extend(["--service-account-json", service_account_json])

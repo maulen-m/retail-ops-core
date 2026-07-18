@@ -19,9 +19,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.integrations.google_ops_board import (
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
+    detect_board_ownership_layout,
     dump_json,
     extract_rows_from_matrix,
     load_ops_board_contract,
+    resolve_effective_board_state,
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
@@ -83,7 +87,7 @@ def _load_allowed_order_scope(
     path: Path,
     *,
     target_date: date,
-) -> tuple[set[tuple[str, str]], list[dict[str, str]]]:
+) -> tuple[set[tuple[str, str]], list[dict[str, str]], dict[str, str]]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != 2:
         raise ValueError("size writeback scope must be a schema_version=2 JSON object")
@@ -132,7 +136,29 @@ def _load_allowed_order_scope(
             "line_key": _clean(raw.get("line_key")),
             "my_size": _clean(raw.get("my_size")),
         }
-        if not all(item.values()):
+        if "effective_size_source" in raw:
+            item.update(
+                {
+                    "raw_my_size": _clean(raw.get("raw_my_size")),
+                    "raw_auto_size_suggestion": _clean(
+                        raw.get("raw_auto_size_suggestion")
+                    ),
+                    "effective_size": _clean(raw.get("effective_size")),
+                    "effective_size_source": _clean(
+                        raw.get("effective_size_source")
+                    ),
+                }
+            )
+        required_fields = (
+            "store_code",
+            "order_id",
+            "db_row_id",
+            "line_key",
+            "my_size",
+        )
+        if "effective_size_source" in item:
+            required_fields += ("effective_size", "effective_size_source")
+        if not all(item.get(field) for field in required_fields):
             raise ValueError("size writeback scope contains an incomplete pinned row")
         if (item["store_code"], item["order_id"]) not in seen:
             raise ValueError("size writeback scope row is outside the allowed order set")
@@ -153,7 +179,15 @@ def _load_allowed_order_scope(
     ).hexdigest()
     if observed_hash != _clean(payload.get("scope_sha256")):
         raise ValueError("size writeback scope hash mismatch")
-    return seen, pinned_rows
+    return seen, pinned_rows, {
+        "target_date": _clean(request_identity.get("target_date")),
+        **(
+            {"ready_source": _clean(request_identity.get("ready_source"))}
+            if "ready_source" in request_identity
+            else {}
+        ),
+        "ready_set_at": _clean(request_identity.get("ready_set_at")),
+    }
 
 
 def _db_line_key(db_row: dict[str, Any]) -> str:
@@ -254,16 +288,28 @@ def plan_size_writeback(
         old_size = _clean(db_row.get("assigned_size"))
         if normalized_size == old_size:
             continue
-        updates.append(
-            {
-                "target_key": target_key,
-                "raw_input_size": raw_size,
-                "new_assigned_size": normalized_size,
-                "old_assigned_size": old_size,
-                "store_code": _clean(db_row.get("store_code")),
-                "product_type": product_type,
-            }
-        )
+        update = {
+            "target_key": target_key,
+            "raw_input_size": raw_size,
+            "new_assigned_size": normalized_size,
+            "old_assigned_size": old_size,
+            "store_code": _clean(db_row.get("store_code")),
+            "product_type": product_type,
+        }
+        if "effective_size_source" in row:
+            update.update(
+                {
+                    "raw_my_size": _clean(row.get("raw_my_size")),
+                    "raw_auto_size_suggestion": _clean(
+                        row.get("raw_auto_size_suggestion")
+                    ),
+                    "effective_size": _clean(row.get("effective_size")),
+                    "effective_size_source": _clean(
+                        row.get("effective_size_source")
+                    ),
+                }
+            )
+        updates.append(update)
     return {
         "updates": updates,
         "invalid_rows": invalid_rows,
@@ -424,18 +470,54 @@ def main(argv: list[str] | None = None) -> int:
     spreadsheet_id = resolve_spreadsheet_id(args.spreadsheet_id, contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
     matrix = client.get_tab_values(writeback_spec["tab"])
+    run_control_matrix = client.get_tab_values("Run_Control")
     headers = contract.tabs[writeback_spec["tab"]].headers
-    sheet_rows = extract_rows_from_matrix(headers, matrix)
+    raw_sheet_rows = extract_rows_from_matrix(headers, matrix)
+    ownership_layout = detect_board_ownership_layout(
+        {
+            "SalesRaw_Today": list(matrix[0]) if matrix else [],
+            "Run_Control": (
+                list(run_control_matrix[0]) if run_control_matrix else []
+            ),
+        }
+    )
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        raise RuntimeError("partial Board ownership layout blocks size writeback")
+    resolution: dict[str, Any] | None = None
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        run_rows = extract_rows_from_matrix(
+            contract.tabs["Run_Control"].headers, run_control_matrix
+        )
+        run_row = next(
+            (
+                row
+                for row in run_rows
+                if _clean(row.get("target_date")) == target.isoformat()
+            ),
+            {},
+        )
+        resolution = resolve_effective_board_state(
+            salesraw_rows=raw_sheet_rows,
+            run_control_row=run_row,
+            target_date=target.isoformat(),
+        )
+        sheet_rows = list(resolution["effective_salesraw_rows"])
+    else:
+        sheet_rows = list(raw_sheet_rows)
     if args.apply and args.allowed_order_scope_file is None:
         raise RuntimeError("--apply requires --allowed-order-scope-file")
     enabled_stores = {
         _normalize_store_code(value) for value in load_sync_enabled_kaspi_store_codes()
     }
     if args.allowed_order_scope_file is not None:
-        allowed_order_scope, pinned_scope_rows = _load_allowed_order_scope(
+        allowed_order_scope, pinned_scope_rows, pinned_request_identity = _load_allowed_order_scope(
             args.allowed_order_scope_file,
             target_date=target,
         )
+        if resolution is not None and pinned_request_identity != dict(
+            resolution["request_identity"]
+        ):
+            raise RuntimeError("size writeback scope READY identity changed after pin")
         scoped_sheet_rows = [
             row
             for row in sheet_rows
@@ -452,6 +534,20 @@ def main(argv: list[str] | None = None) -> int:
                 "db_row_id": _clean(row.get("_db_row_id")),
                 "line_key": _clean(row.get("_line_key")),
                 "my_size": _clean(row.get("MY_SIZE")),
+                **(
+                    {
+                        "raw_my_size": _clean(row.get("raw_my_size")),
+                        "raw_auto_size_suggestion": _clean(
+                            row.get("raw_auto_size_suggestion")
+                        ),
+                        "effective_size": _clean(row.get("effective_size")),
+                        "effective_size_source": _clean(
+                            row.get("effective_size_source")
+                        ),
+                    }
+                    if resolution is not None
+                    else {}
+                ),
             }
             for row in scoped_sheet_rows
         ]
@@ -483,6 +579,7 @@ def main(argv: list[str] | None = None) -> int:
             if _normalize_store_code(row.get("STORE_NAME")) in enabled_stores
         ]
         pinned_scope_rows = []
+        pinned_request_identity = {}
     requested_db_row_ids = {
         _clean(row.get(writeback_spec["key_column"]))
         for row in scoped_sheet_rows
@@ -506,6 +603,12 @@ def main(argv: list[str] | None = None) -> int:
         "target_date": target.isoformat(),
         "lookback_days": args.lookback_days,
         "db_row_selection": "exact_salesraw_row_ids",
+        "ownership_mode": ownership_layout["ownership_mode"],
+        "ownership_layout": ownership_layout,
+        "request_identity": dict((resolution or {}).get("request_identity") or {}),
+        "resolution_events": list((resolution or {}).get("resolution_events") or []),
+        "raw_sheet_rows": raw_sheet_rows,
+        "effective_sheet_rows": sheet_rows,
         "allowed_order_scope_path": str(args.allowed_order_scope_file or ""),
         "allowed_order_count": len(allowed_order_scope),
         "sheet_rows_outside_scope": len(sheet_rows) - len(scoped_sheet_rows),

@@ -24,6 +24,9 @@ from core.alerts.google_ops_board_alerts import send_owner_ops_alert  # noqa: E4
 from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_PARTIAL,
+    contract_for_ownership_mode,
+    detect_board_ownership_layout,
     dump_json,
     extract_rows_from_matrix,
     load_ops_board_contract,
@@ -220,7 +223,24 @@ def _build_google_layout_report(*, client: GoogleOpsBoardClient, contract) -> di
     for tab_name in contract.tabs:
         matrix = client.get_tab_values(tab_name)
         header_rows[tab_name] = matrix[0] if matrix else []
-    return validate_contract_layout(contract, sheet_names, header_rows)
+    ownership_layout = detect_board_ownership_layout(header_rows)
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return {
+            "ok": False,
+            "ownership_mode": OWNERSHIP_MODE_PARTIAL,
+            "ownership_layout": ownership_layout,
+            "error": "PARTIAL_BOARD_OWNERSHIP_LAYOUT",
+        }
+    active_contract = contract_for_ownership_mode(
+        contract, ownership_layout["ownership_mode"]
+    )
+    report = validate_contract_layout(active_contract, sheet_names, header_rows)
+    report["ownership_mode"] = ownership_layout["ownership_mode"]
+    report["ownership_layout"] = ownership_layout
+    report["split_write_safety_active"] = (
+        ownership_layout["ownership_mode"] == "split_v1"
+    )
+    return report
 
 
 def _normalized_board_value(value: Any) -> str:
@@ -268,9 +288,36 @@ def _build_live_board_parity_report(
 
     checked_tabs = ["README", "SalesRaw_Today", "Run_Control", "Exceptions"]
     before_snapshot = client.snapshot_tabs(checked_tabs)
+    ownership_layout = detect_board_ownership_layout(
+        {
+            "SalesRaw_Today": (
+                list(before_snapshot["SalesRaw_Today"][0])
+                if before_snapshot.get("SalesRaw_Today")
+                else []
+            ),
+            "Run_Control": (
+                list(before_snapshot["Run_Control"][0])
+                if before_snapshot.get("Run_Control")
+                else []
+            ),
+        }
+    )
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return {
+            "ok": False,
+            "target_date": target_date.isoformat(),
+            "ownership_mode": OWNERSHIP_MODE_PARTIAL,
+            "ownership_layout": ownership_layout,
+            "same_day_preserve": False,
+            "tabs": {},
+            "issues": [{"code": "PARTIAL_BOARD_OWNERSHIP_LAYOUT"}],
+        }
+    active_contract = contract_for_ownership_mode(
+        contract, ownership_layout["ownership_mode"]
+    )
     payload = build_phase1_payload(
         db_path=db_path,
-        contract=contract,
+        contract=active_contract,
         target_date=target_date,
         lookback_days=5,
         obligation_ledger_path=DEFAULT_SHIPPING_OBLIGATION_LEDGER_PATH,
@@ -300,7 +347,7 @@ def _build_live_board_parity_report(
             "visibility_annotation": visibility_annotation,
         }
     plan = build_publish_plan(
-        contract=contract,
+        contract=active_contract,
         before_snapshot=before_snapshot,
         fresh_payload=payload,
         target_date=target_date,
@@ -308,7 +355,7 @@ def _build_live_board_parity_report(
     tab_reports: dict[str, dict[str, Any]] = {}
     all_issues: list[dict[str, Any]] = []
     for tab_name in ("SalesRaw_Today", "Run_Control", "Exceptions"):
-        tab_contract = contract.tabs[tab_name]
+        tab_contract = active_contract.tabs[tab_name]
         key_column = tab_contract.key_column
         ignored_volatile_columns = (
             {"last_sync_at"} if tab_name == "Exceptions" else set()
@@ -399,6 +446,8 @@ def _build_live_board_parity_report(
         all_issues.extend({"tab": tab_name, **issue} for issue in issues)
     return {
         "ok": not all_issues,
+        "ownership_mode": ownership_layout["ownership_mode"],
+        "ownership_layout": ownership_layout,
         "target_date": target_date.isoformat(),
         "same_day_preserve": bool(plan.get("same_day_preserve")),
         "previous_target_date": str(plan.get("previous_target_date") or ""),

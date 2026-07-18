@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = PROJECT_ROOT / "config" / "daily_shipping_runtime.json"
@@ -260,6 +262,9 @@ def render_runtime_markdown(manifest: dict[str, Any]) -> str:
         f"- READY watch: `{watch['start_local']} to {watch['end_local']}`, every `{watch['poll_interval_seconds']}` seconds",
         f"- Stable READY debounce: `{watch['ready_debounce_seconds']}` seconds",
         f"- Auto-probable fallback: `{watch['auto_probable_local']}`",
+        f"- Board contract version: `{watch['board_contract_version']}`",
+        f"- Board write ownership: `{watch['board_ownership_mode']}`",
+        f"- Effective resolution: `{watch['effective_resolution']}`",
         "- Completion proof: checkpoint + exact manifest + confirmed Telegram ledger",
         "- Retry rule: resume only the failed or incomplete stage",
         "- Writer rule: exactly one host owns this cluster",
@@ -684,6 +689,116 @@ def validate_daily_shipping_runtime(
             manifest["watch"]["poll_interval_seconds"]
         ):
             errors.append("watch poll interval drift: StartInterval")
+
+        board_contract_path = project_root / "config" / "google_ops_board.yaml"
+        try:
+            board_contract = yaml.safe_load(
+                board_contract_path.read_text(encoding="utf-8")
+            )
+            board_tabs = board_contract["tabs"]
+        except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
+            errors.append(f"Google Ops Board ownership contract unreadable: {exc}")
+        else:
+            watch = manifest["watch"]
+            if int(watch.get("board_contract_version") or 0) != int(
+                board_contract.get("version") or 0
+            ):
+                errors.append("Board contract version drift")
+            if str(watch.get("board_ownership_mode") or "") != str(
+                board_contract.get("board_ownership_mode") or ""
+            ):
+                errors.append("Board ownership mode drift")
+            if str(watch.get("effective_resolution") or "") != str(
+                board_contract.get("effective_resolution") or ""
+            ):
+                errors.append("Board effective-resolution drift")
+            expected_appended = {
+                "SalesRaw_Today": ["AUTO_SIZE_SUGGESTION"],
+                "Run_Control": [
+                    "employee_ready_observed_at",
+                    "auto_ready_for_closeout",
+                    "auto_ready_set_by",
+                    "auto_ready_set_at",
+                ],
+            }
+            expected_owners = {
+                "SalesRaw_Today": {
+                    "employee_owned_columns": ["HEIGHT", "WEIGHT", "MY_SIZE"],
+                    "watcher_owned_columns": ["AUTO_SIZE_SUGGESTION"],
+                    "automation_status_columns": [],
+                    "publisher_preserved_columns": [
+                        "HEIGHT",
+                        "WEIGHT",
+                        "MY_SIZE",
+                        "AUTO_SIZE_SUGGESTION",
+                    ],
+                    "publisher_owned_columns": [
+                        "Status",
+                        "Date",
+                        "STORE_NAME",
+                        "Quantity",
+                        "Kaspi_name_core",
+                        "OrderID",
+                        "PROBABLE_SIZE",
+                        "KASPI_OFFER_NAME",
+                        "SKU_key",
+                        "_db_row_id",
+                        "_line_key",
+                        "_probable_size_source",
+                        "_probable_size_confidence",
+                        "ExpressDeliveryStatus",
+                    ],
+                },
+                "Run_Control": {
+                    "employee_owned_columns": [
+                        "ready_for_closeout",
+                        "ready_set_by",
+                        "ready_set_at",
+                    ],
+                    "watcher_owned_columns": [
+                        "employee_ready_observed_at",
+                        "auto_ready_for_closeout",
+                        "auto_ready_set_by",
+                        "auto_ready_set_at",
+                    ],
+                    "automation_status_columns": [
+                        "notes",
+                        "last_verified_ready_at",
+                        "last_orchestrator_run_id",
+                        "last_orchestrator_status",
+                    ],
+                    "publisher_preserved_columns": [
+                        "ready_for_closeout",
+                        "ready_set_by",
+                        "ready_set_at",
+                        "employee_ready_observed_at",
+                        "auto_ready_for_closeout",
+                        "auto_ready_set_by",
+                        "auto_ready_set_at",
+                        "notes",
+                        "last_verified_ready_at",
+                        "last_orchestrator_run_id",
+                        "last_orchestrator_status",
+                    ],
+                    "publisher_owned_columns": ["target_date"],
+                },
+            }
+            for tab_name, appended in expected_appended.items():
+                tab = board_tabs.get(tab_name) or {}
+                headers = list(tab.get("headers") or [])
+                if headers[-len(appended) :] != appended:
+                    errors.append(f"Board appended ownership columns drift: {tab_name}")
+                ownership = tab.get("ownership") or {}
+                for owner_name, expected_columns in expected_owners[tab_name].items():
+                    if list(ownership.get(owner_name) or []) != expected_columns:
+                        errors.append(
+                            f"Board ownership set drift: {tab_name}.{owner_name}"
+                        )
+            run_defaults = (board_tabs.get("Run_Control") or {}).get(
+                "new_row_defaults"
+            ) or {}
+            if str(run_defaults.get("ready_for_closeout") or ""):
+                errors.append("Board v4 Run_Control default must keep employee READY blank")
 
     if check_automation_scope:
         path = project_root / str(manifest["automation_scope_manifest"])

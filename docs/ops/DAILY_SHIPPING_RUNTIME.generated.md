@@ -9,6 +9,9 @@
 - READY watch: `09:00 to 24:00`, every `60` seconds
 - Stable READY debounce: `60` seconds
 - Auto-probable fallback: `18:57`
+- Board contract version: `4`
+- Board write ownership: `split_v1`
+- Effective resolution: `employee_first_at_closeout_read`
 - Completion proof: checkpoint + exact manifest + confirmed Telegram ledger
 - Retry rule: resume only the failed or incomplete stage
 - Writer rule: exactly one host owns this cluster

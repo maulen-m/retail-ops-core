@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +17,20 @@ GOOGLE_SHEETS_SCOPES = (
     "https://www.googleapis.com/auth/drive",
 )
 DEFAULT_CONTRACT_PATH = PROJECT_ROOT / "config" / "google_ops_board.yaml"
+OWNERSHIP_MODE_LEGACY_V3 = "legacy_v3"
+OWNERSHIP_MODE_SPLIT_V1 = "split_v1"
+OWNERSHIP_MODE_PARTIAL = "partial"
+SALESRAW_SPLIT_COLUMNS = ("AUTO_SIZE_SUGGESTION",)
+RUN_CONTROL_SPLIT_COLUMNS = (
+    "employee_ready_observed_at",
+    "auto_ready_for_closeout",
+    "auto_ready_set_by",
+    "auto_ready_set_at",
+)
+REQUIRED_SPLIT_COLUMNS = {
+    "SalesRaw_Today": SALESRAW_SPLIT_COLUMNS,
+    "Run_Control": RUN_CONTROL_SPLIT_COLUMNS,
+}
 
 
 @dataclass(frozen=True)
@@ -26,10 +40,25 @@ class TabContract:
     key_column: str
     editable_columns: list[str]
     ui: dict[str, Any]
+    ownership: dict[str, list[str]] = field(default_factory=dict)
+    new_row_defaults: dict[str, Any] = field(default_factory=dict)
 
     @property
     def editable_column_set(self) -> set[str]:
         return set(self.editable_columns)
+
+    def ownership_column_set(self, owner: str) -> set[str]:
+        return set(self.ownership.get(owner) or [])
+
+    @property
+    def publisher_preserved_column_set(self) -> set[str]:
+        configured = self.ownership_column_set("publisher_preserved_columns")
+        return configured or self.editable_column_set
+
+    @property
+    def publisher_owned_column_set(self) -> set[str]:
+        configured = self.ownership_column_set("publisher_owned_columns")
+        return configured or (set(self.headers) - self.publisher_preserved_column_set)
 
 
 @dataclass(frozen=True)
@@ -42,9 +71,11 @@ class OpsBoardContract:
     closeout_write_env_gate: str
     service_account_env_vars: list[str]
     tabs: dict[str, TabContract]
-    writeback: dict[str, dict[str, str]]
+    writeback: dict[str, dict[str, Any]]
     same_day_cutoff_default: str = "17:00"
     same_day_cutoff_by_store: dict[str, str] = field(default_factory=dict)
+    board_ownership_mode: str = OWNERSHIP_MODE_LEGACY_V3
+    effective_resolution: str = "legacy_shared_cells"
 
 
 def load_ops_board_contract(path: Path | None = None) -> OpsBoardContract:
@@ -57,6 +88,11 @@ def load_ops_board_contract(path: Path | None = None) -> OpsBoardContract:
             key_column=str(spec["key_column"]),
             editable_columns=list(spec.get("editable_columns") or []),
             ui=dict(spec.get("ui") or {}),
+            ownership={
+                str(key): [str(value) for value in (values or [])]
+                for key, values in (spec.get("ownership") or {}).items()
+            },
+            new_row_defaults=dict(spec.get("new_row_defaults") or {}),
         )
         for name, spec in (data.get("tabs") or {}).items()
     }
@@ -74,6 +110,50 @@ def load_ops_board_contract(path: Path | None = None) -> OpsBoardContract:
         same_day_cutoff_by_store={
             str(k): str(v) for k, v in (data.get("same_day_cutoff_by_store") or {}).items()
         },
+        board_ownership_mode=str(
+            data.get("board_ownership_mode") or OWNERSHIP_MODE_LEGACY_V3
+        ),
+        effective_resolution=str(
+            data.get("effective_resolution") or "legacy_shared_cells"
+        ),
+    )
+
+
+def contract_for_ownership_mode(
+    contract: OpsBoardContract,
+    ownership_mode: str,
+) -> OpsBoardContract:
+    """Return the exact header/default view allowed by the observed Board mode."""
+    if ownership_mode == OWNERSHIP_MODE_SPLIT_V1:
+        return contract
+    if ownership_mode != OWNERSHIP_MODE_LEGACY_V3:
+        raise ValueError(f"Unsupported Board ownership mode: {ownership_mode}")
+    tabs = dict(contract.tabs)
+    for tab_name, split_columns in REQUIRED_SPLIT_COLUMNS.items():
+        tab = tabs[tab_name]
+        split_set = set(split_columns)
+        defaults = {
+            key: value
+            for key, value in tab.new_row_defaults.items()
+            if key not in split_set
+        }
+        if tab_name == "Run_Control":
+            defaults["ready_for_closeout"] = "HOLD"
+        tabs[tab_name] = replace(
+            tab,
+            headers=[header for header in tab.headers if header not in split_set],
+            editable_columns=[
+                column for column in tab.editable_columns if column not in split_set
+            ],
+            ownership={},
+            new_row_defaults=defaults,
+        )
+    return replace(
+        contract,
+        version=3,
+        tabs=tabs,
+        board_ownership_mode=OWNERSHIP_MODE_LEGACY_V3,
+        effective_resolution="legacy_shared_cells",
     )
 
 
@@ -510,6 +590,255 @@ def extract_rows_with_positions_from_matrix(
     return rows
 
 
+def detect_board_ownership_layout(
+    header_rows: dict[str, list[Any]],
+) -> dict[str, Any]:
+    """Classify actual Board headers without trusting the repo contract version."""
+    tab_reports: dict[str, dict[str, Any]] = {}
+    total_required = 0
+    total_present = 0
+    trailing_order_ok = True
+    for tab_name, required_columns in REQUIRED_SPLIT_COLUMNS.items():
+        observed_header_list = [
+            str(value or "").strip()
+            for value in (header_rows.get(tab_name) or [])
+            if str(value or "").strip()
+        ]
+        observed_headers = set(observed_header_list)
+        present = [column for column in required_columns if column in observed_headers]
+        missing = [column for column in required_columns if column not in observed_headers]
+        tab_trailing_order_ok = bool(
+            len(present) == len(required_columns)
+            and observed_header_list[-len(required_columns) :]
+            == list(required_columns)
+        )
+        if present and not tab_trailing_order_ok:
+            trailing_order_ok = False
+        total_required += len(required_columns)
+        total_present += len(present)
+        tab_reports[tab_name] = {
+            "required_appended_columns": list(required_columns),
+            "present_appended_columns": present,
+            "missing_appended_columns": missing,
+            "trailing_order_ok": tab_trailing_order_ok,
+        }
+    if total_present == 0:
+        mode = OWNERSHIP_MODE_LEGACY_V3
+    elif total_present == total_required and trailing_order_ok:
+        mode = OWNERSHIP_MODE_SPLIT_V1
+    else:
+        mode = OWNERSHIP_MODE_PARTIAL
+    return {
+        "ok": mode != OWNERSHIP_MODE_PARTIAL,
+        "ownership_mode": mode,
+        "required_appended_column_count": total_required,
+        "present_appended_column_count": total_present,
+        "tabs": tab_reports,
+        "error": (
+            "PARTIAL_BOARD_OWNERSHIP_LAYOUT"
+            if mode == OWNERSHIP_MODE_PARTIAL
+            else ""
+        ),
+    }
+
+
+def resolve_effective_board_state(
+    *,
+    salesraw_rows: list[dict[str, Any]],
+    run_control_row: dict[str, Any] | None,
+    target_date: str,
+) -> dict[str, Any]:
+    """Pure employee-first resolution for split Board size and READY state."""
+    resolution_events: list[dict[str, Any]] = []
+    effective_rows: list[dict[str, Any]] = []
+    for raw_row in salesraw_rows:
+        row = dict(raw_row)
+        employee_size = str(row.get("MY_SIZE") or "").strip()
+        auto_size = str(row.get("AUTO_SIZE_SUGGESTION") or "").strip()
+        if employee_size:
+            effective_size = employee_size
+            size_source = "EMPLOYEE_MY_SIZE"
+            if auto_size:
+                resolution_events.append(
+                    {
+                        "code": "AUTO_SIZE_DISCARDED_EMPLOYEE_VALUE",
+                        "_db_row_id": str(row.get("_db_row_id") or "").strip(),
+                        "OrderID": str(row.get("OrderID") or "").strip(),
+                    }
+                )
+        elif auto_size:
+            effective_size = auto_size
+            size_source = "AUTO_SIZE_SUGGESTION"
+            resolution_events.append(
+                {
+                    "code": "AUTO_SIZE_SELECTED_EMPLOYEE_BLANK",
+                    "_db_row_id": str(row.get("_db_row_id") or "").strip(),
+                    "OrderID": str(row.get("OrderID") or "").strip(),
+                }
+            )
+        else:
+            effective_size = ""
+            size_source = ""
+        row["raw_my_size"] = employee_size
+        row["raw_auto_size_suggestion"] = auto_size
+        row["effective_size"] = effective_size
+        row["effective_size_source"] = size_source
+        # Existing readiness/writeback consumers intentionally receive a copy
+        # whose MY_SIZE is the resolved effective value.
+        row["MY_SIZE"] = effective_size
+        effective_rows.append(row)
+
+    raw_control = dict(run_control_row or {})
+    employee_ready = str(raw_control.get("ready_for_closeout") or "").strip().upper()
+    employee_ready_at = str(raw_control.get("ready_set_at") or "").strip()
+    observed_at = str(raw_control.get("employee_ready_observed_at") or "").strip()
+    auto_ready = str(raw_control.get("auto_ready_for_closeout") or "").strip().upper()
+    auto_ready_at = str(raw_control.get("auto_ready_set_at") or "").strip()
+    invalid_employee_value = ""
+    ready_source = ""
+    ready_set_at = ""
+    if employee_ready == "HOLD":
+        effective_ready = "HOLD"
+        if auto_ready == "READY":
+            resolution_events.append(
+                {"code": "AUTO_READY_DISCARDED_EMPLOYEE_HOLD", "target_date": target_date}
+            )
+    elif employee_ready == "READY":
+        effective_ready = "READY"
+        ready_source = "EMPLOYEE"
+        ready_set_at = employee_ready_at or observed_at
+        if auto_ready == "READY":
+            resolution_events.append(
+                {"code": "AUTO_READY_DISCARDED_EMPLOYEE_READY", "target_date": target_date}
+            )
+        if not ready_set_at:
+            resolution_events.append(
+                {"code": "EMPLOYEE_READY_IDENTITY_PENDING_OBSERVATION", "target_date": target_date}
+            )
+    elif employee_ready:
+        effective_ready = "INVALID"
+        invalid_employee_value = employee_ready
+        resolution_events.append(
+            {
+                "code": "INVALID_EMPLOYEE_READY_VALUE",
+                "target_date": target_date,
+                "value": employee_ready,
+            }
+        )
+    elif auto_ready == "READY" and auto_ready_at:
+        effective_ready = "READY"
+        ready_source = "AUTO"
+        ready_set_at = auto_ready_at
+    else:
+        effective_ready = "HOLD"
+
+    effective_control = dict(raw_control)
+    effective_control["raw_ready_for_closeout"] = str(
+        raw_control.get("ready_for_closeout") or ""
+    ).strip()
+    effective_control["raw_ready_set_at"] = employee_ready_at
+    effective_control["raw_employee_ready_observed_at"] = observed_at
+    effective_control["raw_auto_ready_for_closeout"] = str(
+        raw_control.get("auto_ready_for_closeout") or ""
+    ).strip()
+    effective_control["raw_auto_ready_set_at"] = auto_ready_at
+    effective_control["ready_for_closeout"] = effective_ready
+    effective_control["ready_source"] = ready_source
+    effective_control["ready_set_at"] = ready_set_at
+    if ready_source == "AUTO":
+        effective_control["ready_set_by"] = str(
+            raw_control.get("auto_ready_set_by") or ""
+        ).strip()
+    request_identity = {
+        "target_date": str(target_date or "").strip(),
+        "ready_source": ready_source,
+        "ready_set_at": ready_set_at,
+    }
+    return {
+        "raw_salesraw_rows": [dict(row) for row in salesraw_rows],
+        "effective_salesraw_rows": effective_rows,
+        "raw_run_control_row": raw_control,
+        "effective_run_control_row": effective_control,
+        "ready_for_closeout": effective_ready,
+        "ready_source": ready_source,
+        "ready_set_at": ready_set_at,
+        "request_identity": request_identity,
+        "request_identity_ok": bool(
+            effective_ready == "READY" and ready_source and ready_set_at
+        ),
+        "invalid_employee_ready_value": invalid_employee_value,
+        "resolution_events": resolution_events,
+    }
+
+
+def plan_sparse_cell_updates(
+    *,
+    tab_contract: TabContract,
+    sheet_row: int,
+    existing_row: dict[str, Any],
+    desired_row: dict[str, Any],
+    allowed_columns: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Plan changed-cell writes and reject any column outside the owner set."""
+    allowed = set(allowed_columns or tab_contract.publisher_owned_column_set)
+    unknown = allowed - set(tab_contract.headers)
+    if unknown:
+        raise ValueError(
+            f"{tab_contract.name} sparse update has unknown columns: {sorted(unknown)}"
+        )
+    updates: list[dict[str, Any]] = []
+    for column in tab_contract.headers:
+        if column not in allowed:
+            continue
+        before = existing_row.get(column, "")
+        after = desired_row.get(column, "")
+        if before == after:
+            continue
+        column_number = tab_contract.headers.index(column) + 1
+        updates.append(
+            {
+                "range": (
+                    f"{tab_contract.name}!{_column_letter(column_number)}{int(sheet_row)}"
+                ),
+                "value": after,
+                "field": column,
+            }
+        )
+    return updates
+
+
+def validate_ownership_contract(contract: OpsBoardContract) -> list[str]:
+    errors: list[str] = []
+    if contract.version != 4:
+        errors.append(f"board contract version must be 4, got {contract.version}")
+    if contract.board_ownership_mode != OWNERSHIP_MODE_SPLIT_V1:
+        errors.append("board_ownership_mode must be split_v1")
+    if contract.effective_resolution != "employee_first_at_closeout_read":
+        errors.append("effective_resolution must be employee_first_at_closeout_read")
+    for tab_name, appended in REQUIRED_SPLIT_COLUMNS.items():
+        tab = contract.tabs.get(tab_name)
+        if tab is None:
+            errors.append(f"missing ownership tab: {tab_name}")
+            continue
+        if tuple(tab.headers[-len(appended) :]) != tuple(appended):
+            errors.append(f"{tab_name} appended ownership columns are not exact trailing headers")
+        employee = tab.ownership_column_set("employee_owned_columns")
+        watcher = tab.ownership_column_set("watcher_owned_columns")
+        automation = tab.ownership_column_set("automation_status_columns")
+        preserved = tab.publisher_preserved_column_set
+        publisher = tab.publisher_owned_column_set
+        if employee & watcher or employee & automation or watcher & automation:
+            errors.append(f"{tab_name} ownership sets overlap")
+        if preserved != employee | watcher | automation:
+            errors.append(f"{tab_name} publisher-preserved set does not match nonpublisher owners")
+        if publisher & preserved or publisher | preserved != set(tab.headers):
+            errors.append(f"{tab_name} publisher ownership does not partition headers")
+    run_defaults = contract.tabs.get("Run_Control")
+    if run_defaults and str(run_defaults.new_row_defaults.get("ready_for_closeout") or ""):
+        errors.append("Run_Control v4 ready_for_closeout default must be blank")
+    return errors
+
+
 def merge_rows_preserving_editables(
     tab_contract: TabContract,
     fresh_rows: list[dict[str, Any]],
@@ -526,10 +855,10 @@ def merge_rows_preserving_editables(
         out = dict(fresh)
         existing = existing_by_key.get(key)
         if existing:
-            for column in tab_contract.editable_columns:
-                existing_value = existing.get(column)
-                if str(existing_value or "").strip():
-                    out[column] = existing_value
+            for column in tab_contract.publisher_preserved_column_set:
+                # Preserve explicit blanks too: the publisher does not own the
+                # cell and may not synthesize a replacement value.
+                out[column] = existing.get(column, "")
         merged.append(out)
     return merged
 
@@ -555,11 +884,14 @@ def validate_contract_layout(
             "ignored_blank_header_columns": blank_columns,
         }
         ok = ok and header_ok
+    ownership_layout = detect_board_ownership_layout(header_rows)
     return {
         "ok": ok,
         "missing_tabs": missing_tabs,
         "extra_tabs": extra_tabs,
         "tabs": tab_reports,
+        "ownership_layout": ownership_layout,
+        "ownership_mode": ownership_layout["ownership_mode"],
     }
 
 
@@ -789,6 +1121,30 @@ class GoogleOpsBoardClient:
             "?valueInputOption=RAW"
         )
         self._request("POST", url, json={"data": data})
+
+    def delete_tab_rows(self, tab_name: str, sheet_rows: list[int]) -> None:
+        """Delete existing data rows bottom-up without sending preserved cells."""
+        rows = sorted({int(value) for value in sheet_rows if int(value) > 1}, reverse=True)
+        if not rows:
+            return
+        sheet_id = self.get_sheet_id_map().get(tab_name)
+        if sheet_id is None:
+            raise RuntimeError(f"Google Sheets metadata is missing tab: {tab_name}")
+        self.batch_update(
+            [
+                {
+                    "deleteDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": sheet_row - 1,
+                            "endIndex": sheet_row,
+                        }
+                    }
+                }
+                for sheet_row in rows
+            ]
+        )
 
     def snapshot_tabs(self, tab_names: list[str]) -> dict[str, list[list[Any]]]:
         return {tab: self.get_tab_values(tab) for tab in tab_names}

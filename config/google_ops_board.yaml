@@ -1,4 +1,6 @@
-version: 3
+version: 4
+board_ownership_mode: split_v1
+effective_resolution: employee_first_at_closeout_read
 sync_mode: db_first_google_sheets_phase2_salesraw
 spreadsheet_id: 1zCKXkD7Ch8izX3CF_OwMgNb8pdrMLQOyw2clxbjF9Bg
 write_env_gate: ENABLE_GOOGLE_OPS_BOARD_WRITE
@@ -17,6 +19,34 @@ tabs:
       - HEIGHT
       - WEIGHT
       - MY_SIZE
+    ownership:
+      employee_owned_columns:
+        - HEIGHT
+        - WEIGHT
+        - MY_SIZE
+      watcher_owned_columns:
+        - AUTO_SIZE_SUGGESTION
+      automation_status_columns: []
+      publisher_preserved_columns:
+        - HEIGHT
+        - WEIGHT
+        - MY_SIZE
+        - AUTO_SIZE_SUGGESTION
+      publisher_owned_columns:
+        - Status
+        - Date
+        - STORE_NAME
+        - Quantity
+        - Kaspi_name_core
+        - OrderID
+        - PROBABLE_SIZE
+        - KASPI_OFFER_NAME
+        - SKU_key
+        - _db_row_id
+        - _line_key
+        - _probable_size_source
+        - _probable_size_confidence
+        - ExpressDeliveryStatus
     headers:
       - Status
       - Date
@@ -35,6 +65,7 @@ tabs:
       - _probable_size_source
       - _probable_size_confidence
       - ExpressDeliveryStatus
+      - AUTO_SIZE_SUGGESTION
     ui:
       frozen_row_count: 1
       min_row_count: 2000
@@ -96,6 +127,47 @@ tabs:
       - last_verified_ready_at
       - last_orchestrator_run_id
       - last_orchestrator_status
+    ownership:
+      employee_owned_columns:
+        - ready_for_closeout
+        - ready_set_by
+        - ready_set_at
+      watcher_owned_columns:
+        - employee_ready_observed_at
+        - auto_ready_for_closeout
+        - auto_ready_set_by
+        - auto_ready_set_at
+      automation_status_columns:
+        - notes
+        - last_verified_ready_at
+        - last_orchestrator_run_id
+        - last_orchestrator_status
+      publisher_preserved_columns:
+        - ready_for_closeout
+        - ready_set_by
+        - ready_set_at
+        - employee_ready_observed_at
+        - auto_ready_for_closeout
+        - auto_ready_set_by
+        - auto_ready_set_at
+        - notes
+        - last_verified_ready_at
+        - last_orchestrator_run_id
+        - last_orchestrator_status
+      publisher_owned_columns:
+        - target_date
+    new_row_defaults:
+      ready_for_closeout: ""
+      ready_set_by: ""
+      ready_set_at: ""
+      notes: ""
+      last_verified_ready_at: ""
+      last_orchestrator_run_id: ""
+      last_orchestrator_status: ""
+      employee_ready_observed_at: ""
+      auto_ready_for_closeout: ""
+      auto_ready_set_by: ""
+      auto_ready_set_at: ""
     headers:
       - target_date
       - ready_for_closeout
@@ -105,6 +177,10 @@ tabs:
       - last_verified_ready_at
       - last_orchestrator_run_id
       - last_orchestrator_status
+      - employee_ready_observed_at
+      - auto_ready_for_closeout
+      - auto_ready_set_by
+      - auto_ready_set_at
     ui:
       frozen_row_count: 1
       protected_sheet:

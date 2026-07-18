@@ -23,8 +23,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
+    contract_for_ownership_mode,
+    detect_board_ownership_layout,
+    extract_rows_from_matrix,
     extract_rows_with_positions_from_matrix,
     load_ops_board_contract,
+    resolve_effective_board_state,
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
@@ -337,8 +343,60 @@ def _read_run_control_ready_identity(target_date: date) -> dict[str, str]:
     service_account_json = resolve_service_account_json(contract=contract)
     spreadsheet_id = resolve_spreadsheet_id(contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
-    selected = _select_run_control_row(client, contract, target_date)
+    run_matrix = client.get_tab_values("Run_Control")
+    run_headers_observed = {
+        _clean(value) for value in (run_matrix[0] if run_matrix else [])
+    }
+    run_split = all(
+        field in run_headers_observed
+        for field in (
+            "employee_ready_observed_at",
+            "auto_ready_for_closeout",
+            "auto_ready_set_by",
+            "auto_ready_set_at",
+        )
+    )
+    sales_matrix = client.get_tab_values("SalesRaw_Today") if run_split else []
+    layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(run_matrix[0]) if run_matrix else [],
+            "SalesRaw_Today": list(sales_matrix[0]) if sales_matrix else [],
+        }
+    )
+    rows = extract_rows_with_positions_from_matrix(
+        contract.tabs["Run_Control"].headers, run_matrix
+    )
+    selected = next(
+        (
+            entry
+            for entry in rows
+            if _clean(entry["row"].get("target_date")) == target_date.isoformat()
+        ),
+        None,
+    )
     row = dict((selected or {}).get("row") or {})
+    if layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        resolution = resolve_effective_board_state(
+            salesraw_rows=extract_rows_from_matrix(
+                contract.tabs["SalesRaw_Today"].headers, sales_matrix
+            ),
+            run_control_row=row,
+            target_date=target_date.isoformat(),
+        )
+        row = dict(resolution["effective_run_control_row"])
+        return {
+            "target_date": _clean(row.get("target_date")),
+            "ready_source": _clean(row.get("ready_source")),
+            "ready_set_at": _clean(row.get("ready_set_at")),
+            "ready_for_closeout": _clean(row.get("ready_for_closeout")).upper(),
+        }
+    if layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return {
+            "target_date": _clean(row.get("target_date")),
+            "ready_source": "",
+            "ready_set_at": "",
+            "ready_for_closeout": "PARTIAL_LAYOUT",
+        }
     return {
         "target_date": _clean(row.get("target_date")),
         "ready_set_at": _clean(row.get("ready_set_at")),
@@ -347,16 +405,67 @@ def _read_run_control_ready_identity(target_date: date) -> dict[str, str]:
 
 
 def _update_run_control_ready_value(
-    *, value: str, note: str, target_date: date | None = None
+    *,
+    value: str,
+    note: str,
+    target_date: date | None = None,
+    actor: str = "TELEGRAM_WAYBILL_BOT",
 ) -> dict[str, str]:
     contract = load_ops_board_contract(DEFAULT_CONTRACT_PATH)
     service_account_json = resolve_service_account_json(contract=contract)
     spreadsheet_id = resolve_spreadsheet_id(contract=contract)
     client = GoogleOpsBoardClient.from_service_account_file(spreadsheet_id, service_account_json)
-    selected = _select_run_control_row(client, contract, target_date or _today())
+    run_matrix = client.get_tab_values("Run_Control")
+    run_headers_observed = {
+        _clean(value) for value in (run_matrix[0] if run_matrix else [])
+    }
+    run_split = all(
+        field in run_headers_observed
+        for field in (
+            "employee_ready_observed_at",
+            "auto_ready_for_closeout",
+            "auto_ready_set_by",
+            "auto_ready_set_at",
+        )
+    )
+    rows = extract_rows_with_positions_from_matrix(
+        contract.tabs["Run_Control"].headers, run_matrix
+    )
+    target = target_date or _today()
+    selected = next(
+        (
+            entry
+            for entry in rows
+            if _clean(entry["row"].get("target_date")) == target.isoformat()
+        ),
+        None,
+    )
     if selected is None:
         raise RuntimeError("Run_Control has no exact target-date row; refusing Sheet write")
-    headers = contract.tabs["Run_Control"].headers
+    sales_matrix = client.get_tab_values("SalesRaw_Today") if run_split else []
+    layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(run_matrix[0]) if run_matrix else [],
+            "SalesRaw_Today": list(sales_matrix[0]) if sales_matrix else [],
+        }
+    )
+    if layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        raise RuntimeError("partial Board ownership layout blocks request write")
+    active_contract = contract_for_ownership_mode(
+        contract, layout["ownership_mode"]
+    )
+    headers = active_contract.tabs["Run_Control"].headers
+    rows = extract_rows_with_positions_from_matrix(headers, run_matrix)
+    selected = next(
+        (
+            entry
+            for entry in rows
+            if _clean(entry["row"].get("target_date")) == target.isoformat()
+        ),
+        None,
+    )
+    if selected is None:
+        raise RuntimeError("Run_Control target row changed before request write")
     row = dict(selected["row"])
     current_value = _clean(row.get("ready_for_closeout")).upper()
     current_ready_set_at = _clean(row.get("ready_set_at"))
@@ -374,18 +483,41 @@ def _update_run_control_ready_value(
             "ready_set_at": "",
         }
     row["ready_for_closeout"] = value
-    row["ready_set_by"] = "TELEGRAM_WAYBILL_BOT"
+    row["ready_set_by"] = _clean(actor) or "TELEGRAM_WAYBILL_BOT"
     stamped_at = _now().isoformat() if normalized_value == "READY" else ""
     row["ready_set_at"] = stamped_at
     current_note = _clean(row.get("notes"))
     row["notes"] = note if not current_note else f"{current_note} | {note}"
-    client.update_tab_rows(
-        "Run_Control",
-        headers,
-        [{"sheet_row": int(selected["sheet_row"]), "row": row}],
-    )
+    if layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        sheet_row = int(selected["sheet_row"])
+        updates = []
+        for field in ("ready_for_closeout", "ready_set_by", "ready_set_at", "notes"):
+            column_number = headers.index(field) + 1
+            column = ""
+            while column_number:
+                column_number, remainder = divmod(column_number - 1, 26)
+                column = chr(65 + remainder) + column
+            updates.append(
+                {
+                    "range": f"Run_Control!{column}{sheet_row}",
+                    "value": row[field],
+                    "field": field,
+                }
+            )
+        client.update_cells(updates)
+    else:
+        client.update_tab_rows(
+            "Run_Control",
+            headers,
+            [{"sheet_row": int(selected["sheet_row"]), "row": row}],
+        )
     return {
         "target_date": _clean(row.get("target_date")) or (target_date or _today()).isoformat(),
+        **(
+            {"ready_source": "EMPLOYEE"}
+            if layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1
+            else {}
+        ),
         "ready_set_at": stamped_at,
     }
 
@@ -406,15 +538,25 @@ def _pinned_closeout_completion(target_date: date) -> dict[str, Any]:
 
 
 def set_run_control_ready(
-    *, target_date: date | None = None, note: str = "Telegram /ready fallback"
+    *,
+    target_date: date | None = None,
+    note: str = "Telegram /ready fallback",
+    actor: str = "TELEGRAM_WAYBILL_BOT",
 ) -> dict[str, str]:
-    return _update_run_control_ready_value(value="READY", note=note, target_date=target_date)
+    return _update_run_control_ready_value(
+        value="READY", note=note, target_date=target_date, actor=actor
+    )
 
 
 def set_run_control_hold(
-    *, target_date: date | None = None, note: str = "Telegram /halt fallback"
+    *,
+    target_date: date | None = None,
+    note: str = "Telegram /halt fallback",
+    actor: str = "TELEGRAM_WAYBILL_BOT",
 ) -> dict[str, str]:
-    return _update_run_control_ready_value(value="HOLD", note=note, target_date=target_date)
+    return _update_run_control_ready_value(
+        value="HOLD", note=note, target_date=target_date, actor=actor
+    )
 
 
 def _arm_pending_ready(
@@ -431,6 +573,7 @@ def _arm_pending_ready(
         "chat_id": str(chat_id),
         "user_id": str(user_id),
         "requested_at": now.isoformat(),
+        "ready_source": _clean(request_identity.get("ready_source")),
         "ready_set_at": _clean(request_identity.get("ready_set_at")),
     }
     _save_state(state)
@@ -457,6 +600,7 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
     target_raw = _clean(pending.get("target_date"))
     requested_raw = _clean(pending.get("requested_at"))
     ready_set_at = _clean(pending.get("ready_set_at"))
+    ready_source = _clean(pending.get("ready_source"))
     try:
         target_date = date.fromisoformat(target_raw)
         requested_at = datetime.fromisoformat(requested_raw)
@@ -506,6 +650,7 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
             target_date=target_date,
             run_control_row=current_row,
             request_ready_set_at=ready_set_at,
+            request_ready_source=ready_source,
             now=now,
             path=_halt_barrier_path(),
         )
@@ -515,6 +660,10 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
             )
         identity_matches = (
             _clean(current_row.get("target_date")) == target_date.isoformat()
+            and (
+                not ready_source
+                or _clean(current_row.get("ready_source")) == ready_source
+            )
             and _clean(current_row.get("ready_set_at")) == ready_set_at
             and _clean(current_row.get("ready_for_closeout")).upper() == "READY"
         )
@@ -530,15 +679,18 @@ def _process_pending_ready(*, token: str, now: datetime) -> int:
     env = os.environ.copy()
     env.setdefault("TERM", "dumb")
     env.setdefault("PYTHONUNBUFFERED", "1")
+    command = [
+        sys.executable,
+        str(CLOSEOUT_SCHEDULER_PATH),
+        "--expected-target-date",
+        target_date.isoformat(),
+        "--expected-ready-set-at",
+        ready_set_at,
+    ]
+    if ready_source:
+        command.extend(["--expected-ready-source", ready_source])
     result = subprocess.run(
-        [
-            sys.executable,
-            str(CLOSEOUT_SCHEDULER_PATH),
-            "--expected-target-date",
-            target_date.isoformat(),
-            "--expected-ready-set-at",
-            ready_set_at,
-        ],
+        command,
         cwd=str(PROJECT_ROOT),
         env=env,
     )
@@ -686,6 +838,7 @@ def _handle_halt_command(
     token: str,
     target_date: date,
     halt_request_key: str = "",
+    actor: str = "TELEGRAM_WAYBILL_BOT",
 ) -> bool:
     """Apply idempotent halt state before its Telegram update is acknowledged."""
     try:
@@ -708,7 +861,7 @@ def _handle_halt_command(
         return False
     _clear_pending_ready()
     try:
-        set_run_control_hold(target_date=target_date)
+        set_run_control_hold(target_date=target_date, actor=actor)
         readback = _read_run_control_ready_identity(target_date)
         if (
             _clean(readback.get("target_date")) != target_date.isoformat()
@@ -822,6 +975,7 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
             request_identity = set_run_control_ready(
                 target_date=target_date,
                 note="Telegram /ready fallback armed",
+                actor=f"TELEGRAM_USER:{user_id}",
             )
         except Exception as exc:
             _send_text(token=token, chat_id=chat_id, text=f"Telegram /ready failed to set Run_Control READY: <code>{exc}</code>")
@@ -837,6 +991,7 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
                 target_date=target_date,
                 run_control_row=current_row,
                 request_ready_set_at=_clean(request_identity.get("ready_set_at")),
+                request_ready_source=_clean(request_identity.get("ready_source")),
                 now=now,
                 path=_halt_barrier_path(),
             )
@@ -870,6 +1025,7 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
         pinned_manifest_path = _clean(state.get("manifest_path"))
         delivery_status = _clean(state.get("status")).upper()
         ready_set_at = _clean(current_identity.get("ready_set_at"))
+        ready_source = _clean(current_identity.get("ready_source"))
         current_row = dict(completion.get("row") or {}) or {
             "target_date": _clean(current_identity.get("target_date")),
             "ready_set_at": ready_set_at,
@@ -879,6 +1035,7 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
             target_date=target_date,
             run_control_row=current_row,
             request_ready_set_at=ready_set_at,
+            request_ready_source=ready_source,
             now=now,
             path=_halt_barrier_path(),
         )
@@ -912,15 +1069,18 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
         env = os.environ.copy()
         env.setdefault("TERM", "dumb")
         env.setdefault("PYTHONUNBUFFERED", "1")
+        command = [
+            sys.executable,
+            str(CLOSEOUT_SCHEDULER_PATH),
+            "--expected-target-date",
+            target_date.isoformat(),
+            "--expected-ready-set-at",
+            ready_set_at,
+        ]
+        if ready_source:
+            command.extend(["--expected-ready-source", ready_source])
         result = subprocess.run(
-            [
-                sys.executable,
-                str(CLOSEOUT_SCHEDULER_PATH),
-                "--expected-target-date",
-                target_date.isoformat(),
-                "--expected-ready-set-at",
-                ready_set_at,
-            ],
+            command,
             cwd=str(PROJECT_ROOT),
             env=env,
         )
@@ -1029,6 +1189,7 @@ def _handle_command(*, text: str, chat_id: str, user_id: str, token: str, now: d
             token=token,
             target_date=target_date,
             halt_request_key=f"direct:{chat_id}:{now.isoformat()}",
+            actor=f"TELEGRAM_USER:{user_id}",
         )
 
 
@@ -1089,6 +1250,7 @@ def poll_once(*, now: datetime | None = None) -> int:
                 token=token,
                 target_date=local_now.astimezone(ALMATY_TZ).date(),
                 halt_request_key=f"telegram_update:{update_id}",
+                actor=f"TELEGRAM_USER:{user_id}",
             )
             if not committed:
                 # Do not acknowledge the update and do not run pending timers.

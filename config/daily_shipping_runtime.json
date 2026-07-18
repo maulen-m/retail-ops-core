@@ -23,6 +23,9 @@
     ]
   },
   "watch": {
+    "board_contract_version": 4,
+    "board_ownership_mode": "split_v1",
+    "effective_resolution": "employee_first_at_closeout_read",
     "constants_source": "scripts/google_ops_board_automation_common.py",
     "start_local": "09:00",
     "end_local": "24:00",

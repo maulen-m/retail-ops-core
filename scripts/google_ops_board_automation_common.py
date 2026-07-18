@@ -20,7 +20,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.integrations.google_ops_board import extract_rows_from_matrix
+from core.integrations.google_ops_board import (
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
+    contract_for_ownership_mode,
+    detect_board_ownership_layout,
+    extract_rows_from_matrix,
+    resolve_effective_board_state,
+)
 from core.alerts.ops_alert_outbox import enqueue_alert, flush_held
 from scripts.waybill_delivery_completion import (
     DEFAULT_RUN_ROOT,
@@ -421,6 +428,7 @@ def evaluate_closeout_halt_barrier(
     target_date: date,
     run_control_row: dict[str, Any] | None,
     request_ready_set_at: str = "",
+    request_ready_source: str = "",
     now: datetime | None = None,
     path: Path = DEFAULT_CLOSEOUT_HALT_BARRIER_PATH,
     persist_safe_transition: bool = True,
@@ -471,6 +479,7 @@ def evaluate_closeout_halt_barrier(
     row = dict(run_control_row or {})
     row_target = clean_text(row.get("target_date"))
     row_ready_at_raw = clean_text(row.get("ready_set_at"))
+    row_ready_source = clean_text(row.get("ready_source"))
     row_ready_value = clean_text(row.get("ready_for_closeout")).upper()
     barrier_target = clean_text(barrier.get("target_date"))
     halt_at = _parse_iso_datetime(barrier.get("halt_requested_at"))
@@ -539,6 +548,7 @@ def evaluate_closeout_halt_barrier(
                 "superseded_at": local_now.isoformat(),
                 "superseding_request_identity": {
                     "target_date": row_target,
+                    "ready_source": row_ready_source or clean_text(request_ready_source),
                     "ready_set_at": row_ready_at_raw,
                 },
                 "updated_at": local_now.isoformat(),
@@ -653,16 +663,30 @@ def build_workbook_fingerprint(workbook_path: Path) -> dict[str, Any]:
 def salesraw_writeback_fingerprint(rows: list[dict[str, Any]]) -> str:
     stable_rows: list[dict[str, str]] = []
     for row in rows:
-        stable_rows.append(
-            {
-                "_db_row_id": clean_text(row.get("_db_row_id")),
-                "_line_key": clean_text(row.get("_line_key")),
-                "OrderID": clean_text(row.get("OrderID")),
-                "MY_SIZE": clean_text(row.get("MY_SIZE")),
-                "Status": clean_text(row.get("Status")),
-                "Date": clean_text(row.get("Date")),
-            }
-        )
+        stable_row = {
+            "_db_row_id": clean_text(row.get("_db_row_id")),
+            "_line_key": clean_text(row.get("_line_key")),
+            "OrderID": clean_text(row.get("OrderID")),
+            "MY_SIZE": clean_text(row.get("MY_SIZE")),
+            "Status": clean_text(row.get("Status")),
+            "Date": clean_text(row.get("Date")),
+        }
+        if "effective_size_source" in row:
+            stable_row.update(
+                {
+                    "raw_my_size": clean_text(row.get("raw_my_size")),
+                    "raw_auto_size_suggestion": clean_text(
+                        row.get("raw_auto_size_suggestion")
+                    ),
+                    "effective_size": clean_text(
+                        row.get("effective_size") or row.get("MY_SIZE")
+                    ),
+                    "effective_size_source": clean_text(
+                        row.get("effective_size_source")
+                    ),
+                }
+            )
+        stable_rows.append(stable_row)
     stable_rows.sort(key=lambda item: (item["_db_row_id"], item["_line_key"], item["OrderID"]))
     payload = json.dumps(stable_rows, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -675,6 +699,7 @@ def evaluate_ready_debounce(
     now: datetime,
     ready: bool,
     ready_set_at: str = "",
+    ready_source: str = "",
     debounce_seconds: int | None = None,
 ) -> dict[str, Any]:
     effective_debounce_seconds = (
@@ -687,14 +712,22 @@ def evaluate_ready_debounce(
 
     target_iso = target_date.isoformat()
     ready_identity = clean_text(ready_set_at)
+    ready_source_identity = clean_text(ready_source)
     armed_at_raw = clean_text(state.get("armed_at"))
     state_target = clean_text(state.get("target_date"))
     state_ready_set_at = clean_text(state.get("ready_set_at"))
-    if state_target != target_iso or state_ready_set_at != ready_identity or not armed_at_raw:
+    state_ready_source = clean_text(state.get("ready_source"))
+    if (
+        state_target != target_iso
+        or state_ready_source != ready_source_identity
+        or state_ready_set_at != ready_identity
+        or not armed_at_raw
+    ):
         return {
             "action": "arm",
             "state": {
                 "target_date": target_iso,
+                "ready_source": ready_source_identity,
                 "ready_set_at": ready_identity,
                 "armed_at": now.isoformat(),
             },
@@ -709,6 +742,7 @@ def evaluate_ready_debounce(
             "action": "arm",
             "state": {
                 "target_date": target_iso,
+                "ready_source": ready_source_identity,
                 "ready_set_at": ready_identity,
                 "armed_at": now.isoformat(),
             },
@@ -726,6 +760,7 @@ def evaluate_ready_debounce(
             "action": "trigger",
             "state": {
                 "target_date": target_iso,
+                "ready_source": ready_source_identity,
                 "ready_set_at": ready_identity,
                 "armed_at": armed_at.isoformat(),
             },
@@ -737,6 +772,7 @@ def evaluate_ready_debounce(
         "action": "wait",
         "state": {
             "target_date": target_iso,
+            "ready_source": ready_source_identity,
             "ready_set_at": ready_identity,
             "armed_at": armed_at.isoformat(),
         },
@@ -812,10 +848,46 @@ def select_run_control_row(*, client, contract, target_date: date) -> dict[str, 
 
 
 def run_control_request_identity(row: dict[str, Any] | None) -> dict[str, str]:
-    return {
+    source_row = row or {}
+    identity = {
         "target_date": clean_text((row or {}).get("target_date")),
         "ready_set_at": clean_text((row or {}).get("ready_set_at")),
     }
+    split_identity = "ready_source" in source_row or any(
+        field in source_row
+        for field in (
+            "employee_ready_observed_at",
+            "auto_ready_for_closeout",
+            "auto_ready_set_by",
+            "auto_ready_set_at",
+        )
+    )
+    if split_identity:
+        identity = {
+            "target_date": identity["target_date"],
+            "ready_source": clean_text(source_row.get("ready_source")),
+            "ready_set_at": identity["ready_set_at"],
+        }
+    return identity
+
+
+def _matching_request_identity(
+    value: Any,
+    *,
+    reference: dict[str, str],
+) -> dict[str, str]:
+    payload = value if isinstance(value, dict) else {}
+    identity = {
+        "target_date": clean_text(payload.get("target_date")),
+        "ready_set_at": clean_text(payload.get("ready_set_at")),
+    }
+    if "ready_source" in reference:
+        identity = {
+            "target_date": identity["target_date"],
+            "ready_source": clean_text(payload.get("ready_source")),
+            "ready_set_at": identity["ready_set_at"],
+        }
+    return identity
 
 
 def closeout_completion_state(
@@ -826,7 +898,43 @@ def closeout_completion_state(
     today_folder: Path = DEFAULT_TODAY_FOLDER,
     run_root: Path = DEFAULT_RUN_ROOT,
 ) -> dict[str, Any]:
-    row = select_run_control_row(client=client, contract=contract, target_date=target_date)
+    run_matrix = client.get_tab_values("Run_Control")
+    sales_matrix = client.get_tab_values("SalesRaw_Today")
+    ownership_layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(run_matrix[0]) if run_matrix else [],
+            "SalesRaw_Today": list(sales_matrix[0]) if sales_matrix else [],
+        }
+    )
+    active_contract = (
+        contract
+        if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL
+        else contract_for_ownership_mode(
+            contract, ownership_layout["ownership_mode"]
+        )
+    )
+    run_rows = extract_rows_from_matrix(
+        active_contract.tabs["Run_Control"].headers, run_matrix
+    )
+    row = next(
+        (
+            item
+            for item in run_rows
+            if clean_text(item.get("target_date")) == target_date.isoformat()
+        ),
+        None,
+    )
+    resolution_events: list[dict[str, Any]] = []
+    if row and ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        resolution = resolve_effective_board_state(
+            salesraw_rows=extract_rows_from_matrix(
+                active_contract.tabs["SalesRaw_Today"].headers, sales_matrix
+            ),
+            run_control_row=row,
+            target_date=target_date.isoformat(),
+        )
+        row = dict(resolution["effective_run_control_row"])
+        resolution_events = list(resolution["resolution_events"])
     target_match = bool(row) and clean_text((row or {}).get("target_date")) == target_date.isoformat()
     status = clean_text((row or {}).get("last_orchestrator_status")).upper()
     run_id = clean_text((row or {}).get("last_orchestrator_run_id"))
@@ -836,14 +944,9 @@ def closeout_completion_state(
     delivery_pin = dict(checkpoint.get("delivery_artifacts") or {})
     manifest_path_text = clean_text(delivery_pin.get("manifest_path"))
     manifest_sha256 = clean_text(delivery_pin.get("manifest_sha256"))
-    pinned_request_identity = {
-        "target_date": clean_text(
-            (delivery_pin.get("request_identity") or {}).get("target_date")
-        ),
-        "ready_set_at": clean_text(
-            (delivery_pin.get("request_identity") or {}).get("ready_set_at")
-        ),
-    }
+    pinned_request_identity = _matching_request_identity(
+        delivery_pin.get("request_identity"), reference=request_identity
+    )
     pin_status = ""
     if clean_text(checkpoint.get("execution_mode")) != "apply":
         pin_status = "CHECKPOINT_APPLY_PIN_MISSING"
@@ -906,10 +1009,9 @@ def closeout_completion_state(
             "uncertain_delivery": False,
         }
     delivery_completed = bool(delivery_state.get("completed"))
-    delivery_request_identity = {
-        "target_date": clean_text((delivery_state.get("request_identity") or {}).get("target_date")),
-        "ready_set_at": clean_text((delivery_state.get("request_identity") or {}).get("ready_set_at")),
-    }
+    delivery_request_identity = _matching_request_identity(
+        delivery_state.get("request_identity"), reference=request_identity
+    )
     request_identity_match = bool(
         request_identity["target_date"]
         and request_identity["ready_set_at"]
@@ -922,14 +1024,9 @@ def closeout_completion_state(
         / "zero_order_completion.json"
     )
     zero_order_state = load_json_file(zero_order_path) if run_id else {}
-    zero_order_request_identity = {
-        "target_date": clean_text(
-            (zero_order_state.get("request_identity") or {}).get("target_date")
-        ),
-        "ready_set_at": clean_text(
-            (zero_order_state.get("request_identity") or {}).get("ready_set_at")
-        ),
-    }
+    zero_order_request_identity = _matching_request_identity(
+        zero_order_state.get("request_identity"), reference=request_identity
+    )
     zero_order_count = zero_order_state.get("required_order_count")
     zero_order_count_is_zero = zero_order_count == 0 or clean_text(
         zero_order_count
@@ -939,14 +1036,9 @@ def closeout_completion_state(
     marker_required_sha256 = clean_text(zero_order_state.get("required_orders_sha256"))
     checkpoint_required_path = clean_text(checkpoint_required.get("path"))
     checkpoint_required_sha256 = clean_text(checkpoint_required.get("sha256"))
-    checkpoint_required_identity = {
-        "target_date": clean_text(
-            (checkpoint_required.get("request_identity") or {}).get("target_date")
-        ),
-        "ready_set_at": clean_text(
-            (checkpoint_required.get("request_identity") or {}).get("ready_set_at")
-        ),
-    }
+    checkpoint_required_identity = _matching_request_identity(
+        checkpoint_required.get("request_identity"), reference=request_identity
+    )
     zero_order_pin_ok = False
     if (
         marker_required_path
@@ -985,6 +1077,8 @@ def closeout_completion_state(
         and zero_order_request_identity == request_identity
     )
     completed = bool(
+        ownership_layout["ownership_mode"] != OWNERSHIP_MODE_PARTIAL
+        and
         target_match
         and status == "OK"
         and (
@@ -1004,6 +1098,9 @@ def closeout_completion_state(
         "delivery_resume_safe": bool(delivery_state.get("resume_safe")),
         "telegram_ledger_missing_after_attempt": telegram_ledger_missing_after_attempt,
         "request_identity": request_identity,
+        "ownership_mode": ownership_layout["ownership_mode"],
+        "ownership_layout": ownership_layout,
+        "resolution_events": resolution_events,
         "delivery_request_identity": delivery_request_identity,
         "request_identity_match": request_identity_match,
         "zero_order_pin_ok": zero_order_pin_ok,

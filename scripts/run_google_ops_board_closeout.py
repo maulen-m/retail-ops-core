@@ -25,10 +25,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.integrations.google_ops_board import (  # noqa: E402
     DEFAULT_CONTRACT_PATH,
     GoogleOpsBoardClient,
+    OWNERSHIP_MODE_PARTIAL,
+    OWNERSHIP_MODE_SPLIT_V1,
+    contract_for_ownership_mode,
+    detect_board_ownership_layout,
     dump_json,
     extract_rows_from_matrix,
     extract_rows_with_positions_from_matrix,
     load_ops_board_contract,
+    resolve_effective_board_state,
     resolve_service_account_json,
     resolve_spreadsheet_id,
 )
@@ -295,6 +300,25 @@ def _clean(value: Any) -> str:
     return text
 
 
+def _request_identity_values(
+    *,
+    target_date: Any,
+    ready_set_at: Any,
+    ready_source: Any = "",
+) -> dict[str, str]:
+    identity = {
+        "target_date": _clean(target_date),
+        "ready_set_at": _clean(ready_set_at),
+    }
+    if _clean(ready_source):
+        identity = {
+            "target_date": identity["target_date"],
+            "ready_source": _clean(ready_source),
+            "ready_set_at": identity["ready_set_at"],
+        }
+    return identity
+
+
 def _prepacked_exclusion_expectation_error(
     expectation: Mapping[str, Any] | None,
     decision: Mapping[str, Any] | None,
@@ -366,8 +390,22 @@ def _update_run_control_status(
     status: str,
     hold_on_failure: bool = True,
 ) -> None:
-    headers = contract.tabs["Run_Control"].headers
     matrix = client.get_tab_values("Run_Control")
+    sales_matrix = client.get_tab_values("SalesRaw_Today")
+    ownership_layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(matrix[0]) if matrix else [],
+            "SalesRaw_Today": (
+                list(sales_matrix[0]) if sales_matrix else []
+            ),
+        }
+    )
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return
+    active_contract = contract_for_ownership_mode(
+        contract, ownership_layout["ownership_mode"]
+    )
+    headers = active_contract.tabs["Run_Control"].headers
     rows_with_positions = extract_rows_with_positions_from_matrix(headers, matrix)
     target_iso = target_date.isoformat()
     selected = None
@@ -376,6 +414,30 @@ def _update_run_control_status(
             selected = row_info
             break
     if selected is None:
+        return
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        sheet_row = int(selected["sheet_row"])
+        now_text = datetime.now(ALMATY_TZ).isoformat()
+        field_values = {
+            "last_verified_ready_at": now_text,
+            "last_orchestrator_run_id": run_id,
+            "last_orchestrator_status": status,
+        }
+        updates = []
+        for field, value in field_values.items():
+            column_number = headers.index(field) + 1
+            column = ""
+            while column_number:
+                column_number, remainder = divmod(column_number - 1, 26)
+                column = chr(65 + remainder) + column
+            updates.append(
+                {
+                    "range": f"Run_Control!{column}{sheet_row}",
+                    "value": value,
+                    "field": field,
+                }
+            )
+        client.update_cells(updates)
         return
     updated = dict(selected["row"])
     if hold_on_failure and str(status or "").strip().upper().startswith("FAILED_"):
@@ -403,11 +465,23 @@ def build_readiness_report(
 ) -> dict[str, Any]:
     if storeb_excluded is None:
         storeb_excluded = load_storeb_packing_excluded(warn=lambda msg: print(msg, file=sys.stderr))
-    run_control_headers = contract.tabs["Run_Control"].headers
-    salesraw_headers = contract.tabs["SalesRaw_Today"].headers
-
     run_control_matrix = client.get_tab_values("Run_Control")
     salesraw_matrix = client.get_tab_values("SalesRaw_Today")
+    ownership_layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(run_control_matrix[0]) if run_control_matrix else [],
+            "SalesRaw_Today": list(salesraw_matrix[0]) if salesraw_matrix else [],
+        }
+    )
+    active_contract = (
+        contract
+        if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL
+        else contract_for_ownership_mode(
+            contract, ownership_layout["ownership_mode"]
+        )
+    )
+    run_control_headers = active_contract.tabs["Run_Control"].headers
+    salesraw_headers = active_contract.tabs["SalesRaw_Today"].headers
     run_control_rows = extract_rows_from_matrix(run_control_headers, run_control_matrix)
     salesraw_rows = extract_rows_from_matrix(salesraw_headers, salesraw_matrix)
     salesraw_rows, sync_disabled_skipped = _filter_salesraw_to_sync_enabled_stores(
@@ -419,6 +493,47 @@ def build_readiness_report(
         context="closeout readiness",
     )
     run_control_row = _select_run_control_row(run_control_rows, target_date)
+
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return {
+            "target_date": target_date.isoformat(),
+            "ownership_mode": OWNERSHIP_MODE_PARTIAL,
+            "ownership_layout": ownership_layout,
+            "layout_error": "PARTIAL_BOARD_OWNERSHIP_LAYOUT",
+            "run_control_row": run_control_row or {},
+            "run_control_target_match": bool(run_control_row),
+            "run_control_ready_value": "",
+            "run_control_ready_ok": False,
+            "ready_source": "",
+            "ready_set_at": "",
+            "request_identity": {
+                "target_date": target_date.isoformat(),
+                "ready_source": "",
+                "ready_set_at": "",
+            },
+            "request_identity_ok": False,
+            "salesraw_row_count": len(salesraw_rows),
+            "blank_size_rows": [],
+            "blank_size_count": 0,
+            "invalid_size_rows": [],
+            "invalid_size_count": 0,
+            "pending_db_writeback_updates": [],
+            "pending_db_writeback_count": 0,
+            "resolution_events": [],
+            "ready": False,
+        }
+
+    resolution: dict[str, Any] | None = None
+    raw_salesraw_rows = [dict(row) for row in salesraw_rows]
+    raw_run_control_row = dict(run_control_row or {})
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        resolution = resolve_effective_board_state(
+            salesraw_rows=salesraw_rows,
+            run_control_row=run_control_row,
+            target_date=target_date.isoformat(),
+        )
+        salesraw_rows = list(resolution["effective_salesraw_rows"])
+        run_control_row = dict(resolution["effective_run_control_row"])
 
     blank_size_rows: list[dict[str, Any]] = []
     for row in salesraw_rows:
@@ -453,18 +568,39 @@ def build_readiness_report(
     ready_value = _clean((run_control_row or {}).get("ready_for_closeout")).upper()
     ready_toggle_ok = ready_value == "READY"
     ready_set_at = _clean((run_control_row or {}).get("ready_set_at"))
-    request_identity_ok = bool(ready_set_at)
+    ready_source = (
+        _clean((resolution or {}).get("ready_source"))
+        if resolution is not None
+        else ""
+    )
+    request_identity = {
+        "target_date": target_date.isoformat(),
+        "ready_set_at": ready_set_at,
+    }
+    if resolution is not None:
+        request_identity["ready_source"] = ready_source
+    request_identity_ok = bool(
+        ready_set_at and (resolution is None or ready_source)
+    )
     no_blank_sizes = len(blank_size_rows) == 0
     no_invalid_sizes = len(writeback_plan["invalid_rows"]) == 0
 
     report = {
         "target_date": target_date.isoformat(),
+        "ownership_mode": ownership_layout["ownership_mode"],
+        "ownership_layout": ownership_layout,
+        "raw_run_control_row": raw_run_control_row,
         "run_control_row": run_control_row or {},
         "run_control_target_match": target_match,
         "run_control_ready_value": ready_value,
         "run_control_ready_ok": ready_toggle_ok,
         "ready_set_at": ready_set_at,
+        "ready_source": ready_source,
+        "request_identity": request_identity,
         "request_identity_ok": request_identity_ok,
+        "raw_salesraw_rows": raw_salesraw_rows,
+        "effective_salesraw_rows": salesraw_rows,
+        "resolution_events": list((resolution or {}).get("resolution_events") or []),
         "salesraw_row_count": len(salesraw_rows),
         "blank_size_rows": blank_size_rows,
         "blank_size_count": len(blank_size_rows),
@@ -648,12 +784,15 @@ def _hash_run_control_row(row: dict[str, Any]) -> str:
 
 
 def run_control_resume_fingerprint(row: dict[str, Any]) -> str:
+    identity = {
+        "target_date": _clean(row.get("target_date")),
+        "ready_for_closeout": _clean(row.get("ready_for_closeout")).upper(),
+        "ready_set_at": _clean(row.get("ready_set_at")),
+    }
+    if "ready_source" in row:
+        identity["ready_source"] = _clean(row.get("ready_source"))
     payload = json.dumps(
-        {
-            "target_date": _clean(row.get("target_date")),
-            "ready_for_closeout": _clean(row.get("ready_for_closeout")).upper(),
-            "ready_set_at": _clean(row.get("ready_set_at")),
-        },
+        identity,
         ensure_ascii=False,
         sort_keys=True,
     ).encode("utf-8")
@@ -760,21 +899,37 @@ def _write_size_writeback_scope(
     ]
     orders.sort(key=lambda item: (item["store_code"], item["order_id"]))
     allowed_pairs = {(item["store_code"], item["order_id"]) for item in orders}
-    rows = [
-        {
+    rows: list[dict[str, str]] = []
+    split_identity = bool(_clean(request_identity.get("ready_source")))
+    for row in salesraw_rows:
+        if (
+            normalize_store_code(row.get("STORE_NAME")),
+            _clean(row.get("OrderID")),
+        ) not in allowed_pairs:
+            continue
+        pinned_row = {
             "store_code": normalize_store_code(row.get("STORE_NAME")),
             "order_id": _clean(row.get("OrderID")),
             "db_row_id": _clean(row.get("_db_row_id")),
             "line_key": _clean(row.get("_line_key")),
             "my_size": _clean(row.get("MY_SIZE")),
         }
-        for row in salesraw_rows
-        if (
-            normalize_store_code(row.get("STORE_NAME")),
-            _clean(row.get("OrderID")),
-        )
-        in allowed_pairs
-    ]
+        if split_identity:
+            pinned_row.update(
+                {
+                    "raw_my_size": _clean(row.get("raw_my_size")),
+                    "raw_auto_size_suggestion": _clean(
+                        row.get("raw_auto_size_suggestion")
+                    ),
+                    "effective_size": _clean(
+                        row.get("effective_size") or row.get("MY_SIZE")
+                    ),
+                    "effective_size_source": _clean(
+                        row.get("effective_size_source")
+                    ),
+                }
+            )
+        rows.append(pinned_row)
     rows.sort(
         key=lambda item: (
             item["store_code"],
@@ -1071,10 +1226,11 @@ def _request_delivery_attempt_evidence(
     means an API call may already have happened and rebuilding must stop unless
     the exact attempted manifest is still checkpoint-pinned and resumable.
     """
-    expected_identity = {
-        "target_date": _clean(request_identity.get("target_date")),
-        "ready_set_at": _clean(request_identity.get("ready_set_at")),
-    }
+    expected_identity = _request_identity_values(
+        target_date=request_identity.get("target_date"),
+        ready_source=request_identity.get("ready_source"),
+        ready_set_at=request_identity.get("ready_set_at"),
+    )
     if not all(expected_identity.values()):
         return []
 
@@ -1118,16 +1274,18 @@ def _request_delivery_attempt_evidence(
                     }
                 )
             continue
-        observed_identity = {
-            "target_date": _clean(
-                (manifest.get("request_identity") or {}).get("target_date")
-                or manifest.get("target_date")
+        manifest_identity = manifest.get("request_identity") or {}
+        observed_identity = _request_identity_values(
+            target_date=manifest_identity.get("target_date")
+            or manifest.get("target_date"),
+            ready_source=(
+                manifest_identity.get("ready_source")
+                if "ready_source" in expected_identity
+                else ""
             ),
-            "ready_set_at": _clean(
-                (manifest.get("request_identity") or {}).get("ready_set_at")
-                or manifest.get("ready_set_at")
-            ),
-        }
+            ready_set_at=manifest_identity.get("ready_set_at")
+            or manifest.get("ready_set_at"),
+        )
         if observed_identity["target_date"] != expected_identity["target_date"]:
             continue
         candidate_pin = {
@@ -1148,6 +1306,11 @@ def _request_delivery_attempt_evidence(
                     "reason": reason,
                     "target_date": observed_identity["target_date"],
                     "ready_set_at": observed_identity["ready_set_at"],
+                    **(
+                        {"ready_source": observed_identity["ready_source"]}
+                        if "ready_source" in observed_identity
+                        else {}
+                    ),
                     "request_identity_match": str(
                         observed_identity == expected_identity
                     ).lower(),
@@ -1736,6 +1899,7 @@ def _register_current_obligations_after_success(
     *,
     target_date: date,
     ready_set_at: str,
+    ready_source: str = "",
     now: datetime,
 ) -> dict[str, Any]:
     registered = copy.deepcopy(ledger)
@@ -1772,10 +1936,11 @@ def _register_current_obligations_after_success(
         {
             "schema_version": 1,
             "updated_at": now_iso,
-            "request_identity": {
-                "target_date": target_iso,
-                "ready_set_at": _clean(ready_set_at),
-            },
+            "request_identity": _request_identity_values(
+                target_date=target_iso,
+                ready_source=ready_source,
+                ready_set_at=ready_set_at,
+            ),
             "entries": dict(sorted(entries.items())),
         }
     )
@@ -2266,7 +2431,43 @@ def _run_closeout(args: argparse.Namespace) -> int:
 
     run_control_matrix = client.get_tab_values("Run_Control")
     salesraw_matrix = client.get_tab_values("SalesRaw_Today")
-    salesraw_rows = extract_rows_from_matrix(contract.tabs["SalesRaw_Today"].headers, salesraw_matrix)
+    ownership_layout = detect_board_ownership_layout(
+        {
+            "Run_Control": list(run_control_matrix[0]) if run_control_matrix else [],
+            "SalesRaw_Today": list(salesraw_matrix[0]) if salesraw_matrix else [],
+        }
+    )
+    report["ownership_layout"] = ownership_layout
+    report["ownership_mode"] = ownership_layout["ownership_mode"]
+    active_contract = (
+        contract
+        if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL
+        else contract_for_ownership_mode(
+            contract, ownership_layout["ownership_mode"]
+        )
+    )
+    raw_salesraw_rows = extract_rows_from_matrix(
+        active_contract.tabs["SalesRaw_Today"].headers, salesraw_matrix
+    )
+    raw_run_control_rows = extract_rows_from_matrix(
+        active_contract.tabs["Run_Control"].headers, run_control_matrix
+    )
+    raw_run_control_row = _select_run_control_row(
+        raw_run_control_rows, target_date
+    ) or {}
+    resolution_events: list[dict[str, Any]] = []
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+        resolved_board = resolve_effective_board_state(
+            salesraw_rows=raw_salesraw_rows,
+            run_control_row=raw_run_control_row,
+            target_date=target_date.isoformat(),
+        )
+        salesraw_rows = list(resolved_board["effective_salesraw_rows"])
+        run_control_row = dict(resolved_board["effective_run_control_row"])
+        resolution_events = list(resolved_board["resolution_events"])
+    else:
+        salesraw_rows = list(raw_salesraw_rows)
+        run_control_row = dict(raw_run_control_row)
     closeout_salesraw_rows, sync_disabled_skipped_rows = _filter_salesraw_to_sync_enabled_stores(
         salesraw_rows
     )
@@ -2288,26 +2489,28 @@ def _run_closeout(args: argparse.Namespace) -> int:
         run_dir / "run_control_snapshot.json",
         {
             "target_date": target_date.isoformat(),
-            "headers": contract.tabs["Run_Control"].headers,
+            "headers": active_contract.tabs["Run_Control"].headers,
             "matrix": run_control_matrix,
-            "rows": extract_rows_from_matrix(contract.tabs["Run_Control"].headers, run_control_matrix),
+            "raw_rows": raw_run_control_rows,
+            "effective_row": run_control_row,
+            "ownership_mode": ownership_layout["ownership_mode"],
+            "resolution_events": resolution_events,
         },
     )
     dump_json(
         run_dir / "salesraw_snapshot.json",
         {
             "target_date": target_date.isoformat(),
-            "headers": contract.tabs["SalesRaw_Today"].headers,
+            "headers": active_contract.tabs["SalesRaw_Today"].headers,
             "matrix": salesraw_matrix,
-            "rows": salesraw_rows,
+            "raw_rows": raw_salesraw_rows,
+            "effective_rows": salesraw_rows,
             "fitpack_filtered_rows": closeout_salesraw_rows,
+            "ownership_mode": ownership_layout["ownership_mode"],
+            "resolution_events": resolution_events,
             **report_exclusion,
         },
     )
-    run_control_row = _select_run_control_row(
-        extract_rows_from_matrix(contract.tabs["Run_Control"].headers, run_control_matrix),
-        target_date,
-    ) or {}
     fresh_checkpoint = _build_checkpoint_base(
         target_date=target_date,
         db_path=db_path,
@@ -2326,15 +2529,20 @@ def _run_closeout(args: argparse.Namespace) -> int:
     checkpoint = copy.deepcopy(fresh_checkpoint)
 
     expected_ready_set_at = _clean(getattr(args, "expected_ready_set_at", ""))
+    expected_ready_source = _clean(getattr(args, "expected_ready_source", ""))
     observed_request_identity = {
         "target_date": _clean(run_control_row.get("target_date")),
+        "ready_source": _clean(run_control_row.get("ready_source")),
         "ready_set_at": _clean(run_control_row.get("ready_set_at")),
     }
+    if ownership_layout["ownership_mode"] != OWNERSHIP_MODE_SPLIT_V1:
+        observed_request_identity.pop("ready_source")
 
     def _fail_request_identity(reason: str) -> int:
         report["failure_stage"] = "request_identity"
         report["failure_reason"] = reason
         report["expected_ready_set_at"] = expected_ready_set_at
+        report["expected_ready_source"] = expected_ready_source
         report["observed_request_identity"] = observed_request_identity
         output_path = args.json_out or (run_dir / "closeout_report.json")
         dump_json(output_path, report)
@@ -2347,6 +2555,15 @@ def _run_closeout(args: argparse.Namespace) -> int:
 
     def _read_live_request_identity() -> dict[str, str]:
         matrix = client.get_tab_values("Run_Control")
+        live_sales_matrix = client.get_tab_values("SalesRaw_Today")
+        live_layout = detect_board_ownership_layout(
+            {
+                "Run_Control": list(matrix[0]) if matrix else [],
+                "SalesRaw_Today": (
+                    list(live_sales_matrix[0]) if live_sales_matrix else []
+                ),
+            }
+        )
         row = _select_run_control_row(
             extract_rows_from_matrix(
                 contract.tabs["Run_Control"].headers,
@@ -2354,6 +2571,30 @@ def _run_closeout(args: argparse.Namespace) -> int:
             ),
             target_date,
         ) or {}
+        if live_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+            return {
+                "target_date": _clean(row.get("target_date")),
+                "ready_source": "",
+                "ready_set_at": "",
+                "ready_for_closeout": "PARTIAL_LAYOUT",
+            }
+        if live_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1:
+            resolved = resolve_effective_board_state(
+                salesraw_rows=extract_rows_from_matrix(
+                    contract.tabs["SalesRaw_Today"].headers, live_sales_matrix
+                ),
+                run_control_row=row,
+                target_date=target_date.isoformat(),
+            )
+            row = dict(resolved["effective_run_control_row"])
+            return {
+                "target_date": _clean(row.get("target_date")),
+                "ready_source": _clean(row.get("ready_source")),
+                "ready_set_at": _clean(row.get("ready_set_at")),
+                "ready_for_closeout": _clean(
+                    row.get("ready_for_closeout")
+                ).upper(),
+            }
         return {
             "target_date": _clean(row.get("target_date")),
             "ready_set_at": _clean(row.get("ready_set_at")),
@@ -2365,6 +2606,7 @@ def _run_closeout(args: argparse.Namespace) -> int:
             target_date=target_date,
             run_control_row=row,
             request_ready_set_at=expected_ready_set_at,
+            request_ready_source=expected_ready_source,
         )
 
     def _external_mutation_allowed(action: str) -> bool:
@@ -2376,6 +2618,14 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 {
                     "action": action,
                     "reason": f"RUN_CONTROL_READ_FAILED:{type(exc).__name__}",
+                }
+            )
+            return False
+        if _clean(current.get("ready_for_closeout")).upper() == "PARTIAL_LAYOUT":
+            report.setdefault("halt_barrier_suppressed_mutations", []).append(
+                {
+                    "action": action,
+                    "reason": "PARTIAL_BOARD_OWNERSHIP_LAYOUT",
                 }
             )
             return False
@@ -2406,8 +2656,21 @@ def _run_closeout(args: argparse.Namespace) -> int:
 
     if args.apply and not expected_ready_set_at:
         return _fail_request_identity("apply_requires_expected_ready_set_at")
+    if (
+        args.apply
+        and ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1
+        and not expected_ready_source
+    ):
+        return _fail_request_identity("apply_requires_expected_ready_source")
+    if ownership_layout["ownership_mode"] == OWNERSHIP_MODE_PARTIAL:
+        return _fail_request_identity("partial_board_ownership_layout")
     if expected_ready_set_at and (
         observed_request_identity["target_date"] != target_date.isoformat()
+        or (
+            ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1
+            and observed_request_identity.get("ready_source")
+            != expected_ready_source
+        )
         or observed_request_identity["ready_set_at"] != expected_ready_set_at
         or _clean(run_control_row.get("ready_for_closeout")).upper() != "READY"
     ):
@@ -2436,8 +2699,14 @@ def _run_closeout(args: argparse.Namespace) -> int:
     dump_json(run_dir / "readiness_report.json", readiness)
 
     readiness_ready_set_at = _clean(readiness.get("ready_set_at"))
+    readiness_ready_source = _clean(readiness.get("ready_source"))
     if (
-        readiness_ready_set_at != observed_request_identity["ready_set_at"]
+        (
+            ownership_layout["ownership_mode"] == OWNERSHIP_MODE_SPLIT_V1
+            and readiness_ready_source
+            != _clean(observed_request_identity.get("ready_source"))
+        )
+        or readiness_ready_set_at != observed_request_identity["ready_set_at"]
         or (expected_ready_set_at and readiness_ready_set_at != expected_ready_set_at)
     ):
         return _fail_request_identity("ready_identity_changed_during_preflight")
@@ -2738,8 +3007,11 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 failure_row = _read_live_request_identity()
             except Exception:
                 failure_row = {
-                    "target_date": target_date.isoformat(),
-                    "ready_set_at": expected_ready_set_at,
+                    **_request_identity_values(
+                        target_date=target_date.isoformat(),
+                        ready_source=expected_ready_source,
+                        ready_set_at=expected_ready_set_at,
+                    ),
                     "ready_for_closeout": "READY",
                 }
             failure_halt_gate = _halt_gate_for_row(failure_row)
@@ -2810,8 +3082,11 @@ def _run_closeout(args: argparse.Namespace) -> int:
         if halt_gate["blocked"]:
             return False, _record_halt_stop(stage, halt_gate)
         expected = {
-            "target_date": target_date.isoformat(),
-            "ready_set_at": expected_ready_set_at,
+            **_request_identity_values(
+                target_date=target_date.isoformat(),
+                ready_source=expected_ready_source,
+                ready_set_at=expected_ready_set_at,
+            ),
             "ready_for_closeout": "READY",
         }
         if current == expected:
@@ -2838,10 +3113,11 @@ def _run_closeout(args: argparse.Namespace) -> int:
             checkpoint=checkpoint,
             completed_stages=completed_stages,
             today_folder=Path(args.today_folder).expanduser(),
-            request_identity={
-                "target_date": target_date.isoformat(),
-                "ready_set_at": _clean(run_control_row.get("ready_set_at")),
-            },
+            request_identity=_request_identity_values(
+                target_date=target_date.isoformat(),
+                ready_source=run_control_row.get("ready_source"),
+                ready_set_at=run_control_row.get("ready_set_at"),
+            ),
         )
         if not binding_ok:
             report["target_date_delivery_attempts"] = prior_attempts
@@ -2899,10 +3175,11 @@ def _run_closeout(args: argparse.Namespace) -> int:
             )
             if not identity_ok:
                 return int(identity_rc or 1)
-        request_identity = {
-            "target_date": target_date.isoformat(),
-            "ready_set_at": _clean(run_control_row.get("ready_set_at")),
-        }
+        request_identity = _request_identity_values(
+            target_date=target_date.isoformat(),
+            ready_source=run_control_row.get("ready_source"),
+            ready_set_at=run_control_row.get("ready_set_at"),
+        )
         try:
             active_order_ids_by_store = fetch_api_active_order_ids_by_store(
                 target_date=target_date,
@@ -3341,6 +3618,7 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 active_order_ids_by_store,
                 target_date=target_date,
                 ready_set_at=request_identity["ready_set_at"],
+                ready_source=request_identity.get("ready_source", ""),
                 now=datetime.now(ALMATY_TZ),
             )
             save_shipping_obligation_ledger(
@@ -3618,10 +3896,11 @@ def _run_closeout(args: argparse.Namespace) -> int:
                 "run_id": run_id,
                 "manifest_path": str(manifest_path.resolve()),
                 "manifest_sha256": _clean(delivery_artifacts.get("manifest_sha256")),
-                "request_identity": {
-                    "target_date": target_date.isoformat(),
-                    "ready_set_at": expected_ready_set_at,
-                },
+                "request_identity": _request_identity_values(
+                    target_date=target_date.isoformat(),
+                    ready_source=expected_ready_source,
+                    ready_set_at=expected_ready_set_at,
+                ),
             }
             _write_checkpoint(checkpoint_path, checkpoint)
             identity_ok, identity_rc = _request_identity_still_current(
@@ -3857,6 +4136,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Persistent local unresolved-shipping ledger (defaults under runtime/state)",
     )
     parser.add_argument("--resume", action="store_true", help="Reuse prior successful safe stages when possible")
+    parser.add_argument(
+        "--expected-ready-source",
+        type=str,
+        default="",
+        help="Immutable split-v1 READY source supplied by the debounced launcher",
+    )
     parser.add_argument(
         "--expected-ready-set-at",
         type=str,
