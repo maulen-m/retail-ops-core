@@ -1,0 +1,1 @@
+I approve LINE31_COUNTRYWIDE_META_PUBLISH for synthetic repository tests only; this fixture authorizes no live action.

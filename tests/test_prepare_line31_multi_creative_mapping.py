@@ -7,7 +7,9 @@ import subprocess
 import sys
 
 from scripts.prepare_line31_multi_creative_mapping import build_mapping
-from scripts.validate_line31_final_creative_mapping import validate_mapping
+from scripts.validate_line31_final_creative_mapping import DEFAULT_TEMPLATE, validate_mapping
+
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
 
 
 def _write_asset_manifest(tmp_path: Path) -> Path:
@@ -61,10 +63,7 @@ def _write_asset_manifest(tmp_path: Path) -> Path:
 
 def _args(manifest: Path, **overrides: object) -> Namespace:
     values = {
-        "template": Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_asset_mapping_template.json"
-        ),
+        "template": DEFAULT_TEMPLATE,
         "asset_manifest": manifest,
         "landing_url": "https://acmewear.pro/line31",
         "kaspi_marketplace_cta_url": (
@@ -76,10 +75,7 @@ def _args(manifest: Path, **overrides: object) -> Namespace:
         "language": "ru",
         "primary_cta": "open_line31_landing",
         "owner_notes": "",
-        "approval_phrase_path": (
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        ),
+        "approval_phrase_path": str(SYNTHETIC_APPROVAL),
         "creative_ready_declared": True,
         "owner_approved": False,
         "approval_evidence_file": None,

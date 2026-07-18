@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_TEMPLATE = PROJECT_ROOT / "config" / "line31" / "final_creative_mapping_template.json"
 DEFAULT_MAPPING = (
     PROJECT_ROOT
     / "exports"
@@ -80,7 +81,14 @@ def _project_path(raw: str) -> Path:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"mapping file cannot be read: {path}: {exc}") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"mapping file is not valid JSON: {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{path} root must be a JSON object")
     return data
@@ -112,7 +120,10 @@ def _file_sha256(path: Path) -> str:
 
 def required_owner_approval_phrase(path: Path) -> str:
     resolved = _project_path(str(path))
-    text = resolved.read_text(encoding="utf-8")
+    try:
+        text = resolved.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"owner approval phrase file cannot be read: {resolved}: {exc}") from exc
     match = APPROVAL_FENCE_RE.search(text)
     if match:
         return match.group(1).strip()
@@ -375,10 +386,30 @@ def _validate_tracking_redirect_qa(
 def validate_mapping(path: Path, *, template_ok: bool = False) -> CreativeMappingResult:
     errors: list[str] = []
     warnings: list[str] = []
-    data = _read_json(path)
+    try:
+        data = _read_json(path)
+    except (ValueError, TypeError) as exc:
+        return CreativeMappingResult(
+            ok=False,
+            errors=[str(exc)],
+            warnings=[],
+            metrics={
+                "assets_count": 0,
+                "local_video_hashes_checked": 0,
+                "local_thumbnail_hashes_checked": 0,
+                "remote_assets": 0,
+                "approval_evidence_checked": 0,
+                "tracking_redirect_qa_checked": 0,
+                "template_ok": template_ok,
+            },
+        )
 
     if data.get("purpose") != "LINE31 countrywide Meta launch final creative mapping intake template":
         errors.append("purpose must identify LINE31 countrywide Meta creative mapping")
+
+    source_gate = str(data.get("source_gate") or "").strip()
+    if not template_ok and source_gate in {"", "PENDING_RUNTIME_EVIDENCE"}:
+        errors.append("source_gate must identify verified runtime mapping evidence for publish readiness")
 
     if not template_ok and not data.get("creative_ready_declaration_received"):
         errors.append("creative_ready_declaration_received must be true for publish readiness")

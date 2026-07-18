@@ -1,0 +1,69 @@
+{
+  "schema_version": "line31_final_creative_mapping_template_v2",
+  "template_role": "STRUCTURAL_ONLY_NOT_CURRENT_BUSINESS_TRUTH",
+  "generated_at": "",
+  "purpose": "LINE31 countrywide Meta launch final creative mapping intake template",
+  "status": "PENDING_RUNTIME_EVIDENCE",
+  "source_gate": "PENDING_RUNTIME_EVIDENCE",
+  "creative_ready_declaration_received": false,
+  "internal_kaspi_line31_campaigns_policy": "KEEP_ON_UNTIL_OWNER_CREATIVE_READY_DECLARATION_AND_SEPARATE_PAUSE_APPROVAL",
+  "landing_tracking_contract": {
+    "utm_source": "meta",
+    "utm_medium": "paid_social",
+    "utm_campaign": "line31_countrywide",
+    "required_fields": [
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_content",
+      "utm_placement"
+    ]
+  },
+  "tracking_redirect_qa": {
+    "required": true,
+    "gate": "",
+    "evidence_path": "",
+    "evidence_sha256": "",
+    "refresh_policy": "Supply current live post-deploy tracking and redirect QA evidence for strict publish readiness."
+  },
+  "assets": [
+    {
+      "creative_id": "",
+      "local_file_path": "",
+      "final_asset_uri": "",
+      "thumbnail_path_or_uri": "",
+      "video_sha256": "",
+      "thumbnail_sha256": "",
+      "aspect_ratio": "9:16",
+      "duration_seconds": 18,
+      "language": "ru",
+      "primary_cta": "Shop now",
+      "landing_url": "",
+      "utm_content": "",
+      "utm_placement": "",
+      "kaspi_marketplace_cta_url": "",
+      "owner_notes": ""
+    }
+  ],
+  "publish_authority": {
+    "owner_approval_required": true,
+    "approval_phrase_path": "",
+    "approved": false,
+    "approval_evidence_path": "",
+    "approval_evidence_sha256": ""
+  },
+  "blocked_actions_without_separate_approval": [
+    "pause_internal_kaspi_line31_campaigns",
+    "unrelated_campaign_changes",
+    "price_changes",
+    "stock_changes",
+    "kaspi_webui_api_writes",
+    "production_db_writes_beyond_required_launch_logging",
+    "workbook_writes",
+    "scheduler_changes",
+    "supplier_payment",
+    "po_commitment",
+    "cash_movement",
+    "owner_publication_outside_this_launch"
+  ]
+}

@@ -20,15 +20,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.validate_line31_final_creative_mapping import (  # noqa: E402
     DEFAULT_MAPPING,
+    DEFAULT_TEMPLATE,
     required_owner_approval_phrase,
     validate_mapping,
 )
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
-DEFAULT_APPROVAL_PATH = (
-    "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-    "final_creative_publish_intake_and_approval.md"
-)
+DEFAULT_APPROVAL_PATH = "/absolute/path/to/current_sha_bound_owner_approval_phrase.txt"
 VIDEO_EXTENSIONS = {".m4v", ".mov", ".mp4", ".webm"}
 THUMBNAIL_EXTENSIONS = {".jpeg", ".jpg", ".png", ".webp"}
 
@@ -187,10 +185,7 @@ def build_mapping(args: argparse.Namespace) -> dict[str, Any]:
             creative_ready=args.creative_ready_declared,
             owner_approved=args.owner_approved,
         ),
-        "source_gate": template.get(
-            "source_gate",
-            "GREEN_DRY_RUN_EOD_SUCCESS_WITH_DECLARED_WARNINGS",
-        ),
+        "source_gate": "RUNTIME_ASSET_MAPPING_PREPARED",
         "creative_ready_declaration_received": args.creative_ready_declared,
         "internal_kaspi_line31_campaigns_policy": template.get(
             "internal_kaspi_line31_campaigns_policy",
@@ -333,7 +328,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "final_creative_asset_mapping_template.json --overwrite"
         ),
     )
-    parser.add_argument("--template", type=Path, default=DEFAULT_MAPPING)
+    parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     parser.add_argument("--creative-id", required=True)
     parser.add_argument(
         "--asset-dir",

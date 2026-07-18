@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 
 from scripts.validate_line31_final_creative_mapping import (
-    DEFAULT_MAPPING,
+    DEFAULT_TEMPLATE,
     required_owner_approval_phrase,
     validate_mapping,
 )
+
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
 
 
 def _sha(path: Path) -> str:
@@ -16,12 +18,7 @@ def _sha(path: Path) -> str:
 
 
 def _approval_evidence(tmp_path: Path) -> Path:
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     evidence = tmp_path / "owner_approval_evidence.md"
     evidence.write_text(
         f"# Owner Approval Evidence\n\nRecorded: 2026-06-01T16:00:00+05:00\n\n{phrase}\n",
@@ -155,10 +152,7 @@ def _base_mapping(video_path: Path, thumbnail_path: Path, approval_evidence: Pat
         ],
         "publish_authority": {
             "owner_approval_required": True,
-            "approval_phrase_path": (
-                "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-                "final_creative_publish_intake_and_approval.md"
-            ),
+            "approval_phrase_path": str(SYNTHETIC_APPROVAL),
             "approved": True,
             "approval_evidence_path": str(approval_evidence),
             "approval_evidence_sha256": _sha(approval_evidence),
@@ -181,15 +175,15 @@ def _base_mapping_with_tracking(
     return mapping
 
 
-def test_current_pending_template_is_schema_valid_only() -> None:
-    result = validate_mapping(DEFAULT_MAPPING, template_ok=True)
+def test_tracked_pending_template_is_schema_valid_only() -> None:
+    result = validate_mapping(DEFAULT_TEMPLATE, template_ok=True)
 
     assert result.ok, result.errors
     assert result.metrics["template_ok"] is True
 
 
-def test_current_pending_template_is_not_publish_ready() -> None:
-    result = validate_mapping(DEFAULT_MAPPING, template_ok=False)
+def test_tracked_pending_template_is_not_publish_ready() -> None:
+    result = validate_mapping(DEFAULT_TEMPLATE, template_ok=False)
 
     assert not result.ok
     assert any("publish_authority.approved" in error for error in result.errors)

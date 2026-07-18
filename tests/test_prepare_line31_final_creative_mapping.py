@@ -8,9 +8,12 @@ import sys
 
 from scripts.prepare_line31_final_creative_mapping import build_mapping
 from scripts.validate_line31_final_creative_mapping import (
+    DEFAULT_TEMPLATE,
     required_owner_approval_phrase,
     validate_mapping,
 )
+
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
 
 
 def _base_command(video: Path, thumbnail: Path) -> list[str]:
@@ -33,6 +36,8 @@ def _base_command(video: Path, thumbnail: Path) -> list[str]:
         "18",
         "--utm-placement",
         "reels",
+        "--approval-phrase-path",
+        str(SYNTHETIC_APPROVAL),
     ]
 
 
@@ -45,12 +50,7 @@ def _write_media(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _approval_evidence(tmp_path: Path) -> Path:
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     evidence = tmp_path / "owner_approval_evidence.md"
     evidence.write_text(
         f"# Owner Approval Evidence\n\nRecorded: 2026-06-01T16:00:00+05:00\n\n{phrase}\n",
@@ -354,10 +354,7 @@ def test_prepare_mapping_build_function_rejects_missing_video(tmp_path: Path) ->
     video.unlink()
 
     args = Namespace(
-        template=Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_asset_mapping_template.json"
-        ),
+        template=DEFAULT_TEMPLATE,
         creative_id="line31_countrywide_v1",
         asset_dir=None,
         video=video,
@@ -372,10 +369,7 @@ def test_prepare_mapping_build_function_rejects_missing_video(tmp_path: Path) ->
         language="ru",
         primary_cta="Shop now",
         owner_notes="",
-        approval_phrase_path=(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        ),
+        approval_phrase_path=str(SYNTHETIC_APPROVAL),
         approval_evidence_file=None,
         tracking_qa_evidence_file=None,
         creative_ready_declared=False,
