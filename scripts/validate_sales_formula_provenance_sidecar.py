@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Validate a hash-pinned sales formula-provenance sidecar."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.build_sales_formula_provenance_sidecar import (  # noqa: E402
+    ProvenanceError,
+    _json_bytes,
+    _write_atomic,
+    validate_manifest,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--report", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        report = validate_manifest(args.manifest)
+    except (OSError, ValueError, json.JSONDecodeError, ProvenanceError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if args.report:
+        _write_atomic(args.report, _json_bytes(report, pretty=True))
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if report["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
