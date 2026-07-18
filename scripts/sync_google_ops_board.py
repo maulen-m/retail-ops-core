@@ -5,6 +5,8 @@ import argparse
 import os
 import sqlite3
 from collections import defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -39,6 +41,11 @@ from core.integrations.google_ops_board import (
 )
 from core.calc.size_probability import PRODUCT_TYPE_DEFAULTS, calc_size_from_params, determine_size
 from core.integrations.kaspi_order_stage import StageCode, classify_kaspi_stage_from_db_row
+from core.ops.expected_shipping_status import (
+    ExpectedShippingFacts,
+    ExpectedShippingPolicy,
+    board_render,
+)
 from core.ops.waybill_overdue_carryforward import get_overdue_waybill_ready_order_ids_from_db
 from core.ops.google_ops_board_attribution import audit_salesraw_name_core_attribution
 from core.ops.waybill_shipping_obligations import (
@@ -81,6 +88,21 @@ WAREHOUSE_STORE_TO_API = {
     "PP1": "ACMEWEAR",
     "PP2": "ACMEWEAR",
 }
+_EXPECTED_SHIPPING_POLICY: ContextVar[ExpectedShippingPolicy] = ContextVar(
+    "google_ops_board_expected_shipping_policy",
+    default=board_render,
+)
+
+
+@contextmanager
+def _expected_shipping_policy_override(policy: ExpectedShippingPolicy):
+    """Temporarily select the policy used by the preserved Board payload builder."""
+
+    token = _EXPECTED_SHIPPING_POLICY.set(policy)
+    try:
+        yield
+    finally:
+        _EXPECTED_SHIPPING_POLICY.reset(token)
 
 
 def _require_apply_gate(apply: bool, env_name: str) -> None:
@@ -263,28 +285,18 @@ def _order_key(row: sqlite3.Row) -> tuple[str, str]:
 
 
 def _is_source_backed_nonpackable(row: sqlite3.Row) -> bool:
-    state = _clean_str(row["kaspi_status"]).upper()
-    detail = _clean_str(row["kaspi_status_detail"]).upper()
-    return (
-        state in {"DELIVERY", "PICKUP"}
-        or detail
-        in {
-            "COMPLETED",
-            "CANCELLED",
-            "RETURNED",
-            "CANCELLING",
-            "KASPI_DELIVERY_RETURN_REQUESTED",
-            "RETURN_REQUESTED",
-        }
-        or _truthy_flag(_row_value(row, "returned_to_warehouse"))
+    decision = _expected_shipping_decision(
+        row,
+        target_date=_parse_iso_date(row["planned_shipment_date"]) or date(1970, 1, 1),
     )
+    return bool(decision.projection["nonpackable"])
 
 
 def _nonpackable_order_keys(rows: list[sqlite3.Row]) -> set[tuple[str, str]]:
     return {
         _order_key(row)
         for row in rows
-        if _is_row_shipped(row) or _is_source_backed_nonpackable(row)
+        if _is_source_backed_nonpackable(row)
     }
 
 
@@ -481,22 +493,41 @@ def _parse_iso_date(value: Any) -> date | None:
         return None
 
 
+def _expected_shipping_decision(
+    row: sqlite3.Row,
+    *,
+    target_date: date,
+    contract=None,
+):
+    context: dict[str, Any] = {}
+    if contract is not None:
+        store_code = _normalize_store_key(row["store_code"])
+        cutoff_text = (
+            contract.same_day_cutoff_by_store.get(store_code)
+            or contract.same_day_cutoff_default
+        )
+        cutoff_hour, cutoff_minute = _parse_cutoff(cutoff_text)
+        context["same_day_cutoff"] = time(cutoff_hour, cutoff_minute)
+    facts = ExpectedShippingFacts.from_mapping(
+        dict(row),
+        target_date=target_date,
+        **context,
+    )
+    return _EXPECTED_SHIPPING_POLICY.get().evaluate(facts)
+
+
 def _is_pending_carryforward_row(
     row: sqlite3.Row,
     *,
     target_date: date,
     contract,
 ) -> bool:
-    planned_date = _parse_iso_date(row["planned_shipment_date"])
-    if planned_date is None or planned_date >= target_date:
-        return False
-    stage = classify_kaspi_stage_from_db_row(row)
-    if stage not in PENDING_BOARD_STAGES:
-        return False
-    # Once an order's planned day has passed, a same-day cutoff must never make the
-    # still-active obligation disappear.  Cutoffs apply only while selecting today's
-    # newly arrived orders in ``_select_operational_rows``.
-    return True
+    decision = _expected_shipping_decision(
+        row,
+        target_date=target_date,
+        contract=contract,
+    )
+    return bool(decision.projection["pending_carryforward"])
 
 
 def _build_board_overdue_ids_by_store(
@@ -544,13 +575,16 @@ def _select_operational_rows(
             continue
         store_code = _normalize_store_key(row["store_code"])
         order_id = _clean_str(row["order_id"])
-        planned_date = _clean_str(row["planned_shipment_date"])
-        stage = classify_kaspi_stage_from_db_row(row)
         is_overdue = order_id in overdue_ids_by_store.get(store_code, set())
-        is_today_pending = (
-            planned_date == target_iso
-            and stage in PENDING_BOARD_STAGES
-            and _row_is_before_same_day_cutoff(row, contract=contract, target_date=target_date)
+        decision = _expected_shipping_decision(
+            row,
+            target_date=target_date,
+            contract=contract,
+        )
+        is_today_pending = bool(
+            decision.projection["selected"]
+            and decision.projection["rendered_status"] == "TODAY"
+            and _clean_str(row["planned_shipment_date"]) == target_iso
         )
         if is_overdue or is_today_pending:
             selected.append(row)
