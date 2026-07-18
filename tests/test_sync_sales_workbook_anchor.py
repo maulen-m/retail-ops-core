@@ -93,3 +93,87 @@ def test_sync_sales_workbook_anchor_is_idempotent(tmp_path: Path) -> None:
         ("ORD-1", "ACMEWEAR", "2026-02-05", 1.0, 80.0, 80.0),
         ("ORD-2", "ACMEWEAR", "2026-02-06", 2.0, 140.0, 140.0),
     ]
+
+
+def test_anchor_dedupes_snapshot_rows_only_to_first_party_entry_quantity(
+    tmp_path: Path,
+) -> None:
+    workbook = tmp_path / "crm.xlsx"
+    db = tmp_path / "app.db"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SALES_KSP_CRM_1"
+    ws.append(
+        [
+            "OrderID",
+            "Date",
+            "Quantity",
+            "Total_price",
+            "Total_net_rev",
+            "STORE_NAME",
+            "MY_SIZE",
+            "SKU_ID_KSP",
+        ]
+    )
+    ws.append(["D1", "2026-01-15", 1, 1000, 800, "ACMEWEAR", "XL", "ARTICLE-1"])
+    ws.append(["D1", "2026-01-15", 1, 1000, 800, "ACMEWEAR", "", "ARTICLE-1"])
+    ws.append(["D2", "2026-01-16", 2, 2000, 1600, "ACMEWEAR", "L", "ARTICLE-2"])
+    ws.append(["D2", "2026-01-16", 2, 2000, 1600, "ACMEWEAR", "L", "ARTICLE-2"])
+    ws.append(["D3", "2026-01-17", 1, 1000, 800, "ACMEWEAR", "L", "ARTICLE-3A"])
+    ws.append(["D3", "2026-01-17", 1, 1200, 900, "ACMEWEAR", "XL", "ARTICLE-3B"])
+    ws.append(["BAD", "2026-01-18", 1, 1000, 800, "ACMEWEAR", "L", "ARTICLE-B"])
+    ws.append(["BAD", "2026-01-18", 1, 1000, 800, "ACMEWEAR", "", "ARTICLE-B"])
+    wb.save(workbook)
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE fact_order_entries_kaspi (
+                entry_id TEXT PRIMARY KEY,
+                order_id TEXT,
+                store_code TEXT,
+                quantity REAL,
+                raw_json TEXT
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO fact_order_entries_kaspi
+            (entry_id, order_id, store_code, quantity, raw_json)
+            VALUES (?, ?, 'ACMEWEAR', ?, '{"type":"orderentries"}')
+            """,
+            [
+                ("D1#0", "D1", 1),
+                ("D2#0", "D2", 2),
+                ("D3#0", "D3", 1),
+                ("D3#1", "D3", 1),
+                ("BAD#0", "BAD", 3),
+            ],
+        )
+
+    report = sync_sales_workbook_anchor(
+        db_path=db,
+        workbook_path=workbook,
+        apply=False,
+    )
+    rows, quarantine, summary = build_workbook_anchor_rows(
+        workbook_path=workbook,
+        first_party_entry_quantities={
+            ("D1", "ACMEWEAR"): 1,
+            ("D2", "ACMEWEAR"): 2,
+            ("D3", "ACMEWEAR"): 2,
+            ("BAD", "ACMEWEAR"): 3,
+        },
+    )
+
+    assert {row["order_id"]: row["quantity"] for row in rows} == {
+        "D1": 1.0,
+        "D2": 2.0,
+        "D3": 2.0,
+    }
+    assert quarantine[0]["order_id"] == "BAD"
+    assert quarantine[0]["reason"] == "FIRST_PARTY_ENTRY_QUANTITY_MISMATCH"
+    assert summary["deduplicated_snapshot_rows"] == 2
+    assert summary["entry_quantity_mismatch_orders"] == 1
+    assert report["deduplicated_snapshot_rows"] == 2
