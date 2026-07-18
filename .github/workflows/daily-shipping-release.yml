@@ -1,0 +1,39 @@
+name: daily-shipping-release
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "config/daily_shipping_runtime.json"
+      - "config/com.example.*.plist"
+      - "core/ops/**"
+      - "scripts/*google_ops_board*"
+      - "scripts/*waybill*"
+      - "scripts/*telegram*"
+      - "scripts/run_daily_shipping_release_gate.sh"
+      - "tests/test_*waybill*.py"
+      - "tests/test_google_ops_board*.py"
+  push:
+    branches:
+      - "release/daily-shipping-*"
+      - "greenpath/20260613-phase2-truth"
+
+jobs:
+  shipping-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Run daily shipping release gate
+        run: bash scripts/run_daily_shipping_release_gate.sh
