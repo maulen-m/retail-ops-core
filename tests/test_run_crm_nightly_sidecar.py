@@ -67,6 +67,24 @@ def test_apply_runs_guarded_writer_without_dry_run(monkeypatch, tmp_path: Path) 
     assert calls[1][calls[1].index("--timeout") + 1] == "90"
 
 
+def test_default_timeout_covers_bounded_full_workbook_readback(monkeypatch, tmp_path: Path) -> None:
+    _touch_required(monkeypatch, tmp_path)
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        sidecar.subprocess,
+        "run",
+        lambda command, **_kwargs: calls.append(list(command)) or Result(),
+    )
+
+    assert sidecar.main([]) == 0
+    assert sidecar.DEFAULT_TIMEOUT_SECONDS == 2700
+    assert calls[1][calls[1].index("--timeout") + 1] == "2700"
+
+
 def test_crm_nightly_sidecar_plist_is_isolated_and_guarded() -> None:
     payload = plistlib.loads(Path("config/com.example.kaspi-crm-nightly-sidecar.plist").read_bytes())
     assert payload["Label"] == "com.example.kaspi-crm-nightly-sidecar"

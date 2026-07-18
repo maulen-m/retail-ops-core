@@ -24,7 +24,10 @@ ACTIVEORDERS_PATH = PROJECT_ROOT / "excel_ui" / "ActiveOrders" / "ActiveOrders.x
 CRM_WORKBOOK_PATH = PROJECT_ROOT / "excel_ui" / "SALES_KSP_CRM_V3.xlsx"
 SUMMARY_PATH = PROJECT_ROOT / "logs" / "import_orders_to_crm_nightly_latest.json"
 APPLY_ENV_GATE = "ENABLE_CRM_NIGHTLY_SIDECAR"
-DEFAULT_TIMEOUT_SECONDS = 1500
+# The final semantic readback reloads the full formula-heavy workbook and can
+# legitimately take about 13 minutes after Excel has already saved it. Keep a
+# hard outer bound while leaving enough headroom for the complete local run.
+DEFAULT_TIMEOUT_SECONDS = 2700
 
 
 def build_import_command(*, apply: bool, timeout_seconds: int) -> list[str]:
