@@ -223,10 +223,13 @@ def enqueue_alert(
     severity: str = "WARN",
     dedup_key: str = "",
     held: bool = False,
+    local_only: bool = False,
     chat_id: str = ERROR_ALERT_CHAT_ID,
     dedup_window: timedelta = DEDUP_WINDOW,
 ) -> bool:
-    """Persist an alert before attempting delivery; return Telegram delivery status."""
+    """Persist an alert, optionally making it permanently local-only."""
+    if held and local_only:
+        raise ValueError("local_only alerts cannot also be held")
     normalized_severity = str(severity or "WARN").strip().upper()
     if normalized_severity not in {"WARN", "CRITICAL"}:
         raise ValueError("severity must be WARN or CRITICAL")
@@ -238,7 +241,7 @@ def enqueue_alert(
         dedup_window=dedup_window,
     )
     if duplicate is not None:
-        return str(duplicate.get("status") or "") == "delivered"
+        return str(duplicate.get("status") or "") in {"delivered", "local_only"}
 
     entry = {
         "schema_version": 1,
@@ -249,7 +252,8 @@ def enqueue_alert(
         "dedup_key": normalized_key,
         "chat_id": str(chat_id or ERROR_ALERT_CHAT_ID),
         "held": bool(held),
-        "status": "queued",
+        "local_only": bool(local_only),
+        "status": "local_only" if local_only else "queued",
         "attempts": [],
         "created_at": now.isoformat(),
         "queued_at": now.isoformat(),
@@ -258,8 +262,11 @@ def enqueue_alert(
     try:
         _append_event(entry)
     except Exception:
-        _notify_macos(entry["title"], entry["lines"])
+        if not local_only:
+            _notify_macos(entry["title"], entry["lines"])
         return False
+    if local_only:
+        return True
     if held:
         return False
     return _deliver(entry)

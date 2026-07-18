@@ -124,6 +124,39 @@ def test_held_alert_is_not_sent_until_flush_held(monkeypatch, tmp_path: Path) ->
     assert events[-2]["held_release_reason"] == "barrier superseded"
 
 
+def test_local_only_alert_is_never_delivered_or_flushed(monkeypatch, tmp_path: Path) -> None:
+    outbox_path = _isolate(monkeypatch, tmp_path)
+    post_calls: list[object] = []
+    monkeypatch.setattr(
+        "core.alerts.telegram.requests.post",
+        lambda *_args, **_kwargs: post_calls.append(object()),
+    )
+
+    assert outbox_mod.enqueue_alert(
+        title="Report-only divergence",
+        lines=["detail"],
+        dedup_key="shadow-day",
+        local_only=True,
+    ) is True
+    assert outbox_mod.flush_held("must stay local") == {
+        "attempted": 0,
+        "delivered": 0,
+    }
+    assert outbox_mod.flush_undelivered() == {"attempted": 0, "delivered": 0}
+    assert post_calls == []
+    event = _events(outbox_path)[0]
+    assert event["held"] is False
+    assert event["local_only"] is True
+    assert event["status"] == "local_only"
+    assert outbox_mod.enqueue_alert(
+        title="Report-only divergence",
+        lines=["detail"],
+        dedup_key="shadow-day",
+        local_only=True,
+    ) is True
+    assert len(_events(outbox_path)) == 1
+
+
 def test_jsonl_remains_parseable_across_failed_flush_and_success(
     monkeypatch,
     tmp_path: Path,

@@ -120,6 +120,20 @@
         "${PROJECT_ROOT}/runtime_logs/daily_shipping_recovery_retention_stderr.log"
       ],
       "activation_state": "candidate_not_installed"
+    },
+    "closeout_shadow_day": {
+      "manager": "scripts/run_closeout_shadow_day.py",
+      "candidate_plist": "config/com.example.closeout-shadow-day.plist",
+      "label": "com.example.closeout-shadow-day",
+      "schedule": {
+        "weekday": "Sunday",
+        "hour": 5,
+        "minute": 0
+      },
+      "input_mode": "most_recent_completed_day_recorded_artifacts_only",
+      "report_root": "exports/google_ops_board/shadow_days",
+      "divergence_alert": "local_only_outbox_warn_not_deliverable",
+      "activation_state": "candidate_not_installed"
     }
   },
   "security": {
