@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -153,23 +153,40 @@ def planned_date_from_order(order: dict, store_code: Optional[str] = None) -> Op
         real Kaspi planned handover date. Otherwise next-day orders can be surfaced a day
         early and become false pending / missing-waybill targets.
     """
-    attrs = order.get("attributes", {}) or {}
-
-    planned_ts = _planned_ts_from_order(order)
-    planned_dt = _timestamp_to_dt(planned_ts)
-    if planned_dt:
-        return planned_dt.date()
-
-    created_dt = _timestamp_to_dt(attrs.get("creationDate"))
-    if not created_dt:
-        return None
-
-    cutoff = _get_cutoff_time(store_code=store_code)
-    cutoff_dt = created_dt.replace(
-        hour=cutoff.hour, minute=cutoff.minute, second=0, microsecond=0
+    # Local import keeps ``parse_kaspi_date`` available to the policy module while
+    # this shared date module is being imported.
+    from core.ops.expected_shipping_status import (  # noqa: PLC0415
+        ExpectedShippingFacts,
+        api_fallback,
     )
-    base_date = created_dt.date()
-    if created_dt > cutoff_dt:
-        base_date = base_date + timedelta(days=1)
 
-    return base_date
+    attrs = order.get("attributes", {}) or {}
+    planned_ts = _planned_ts_from_order(order)
+    created_ts = attrs.get("creationDate")
+    planned_dt = _timestamp_to_dt(planned_ts)
+    created_dt = _timestamp_to_dt(created_ts)
+    reference_date = (
+        planned_dt.date()
+        if planned_dt is not None
+        else created_dt.date()
+        if created_dt is not None
+        else date.today()
+    )
+    facts = ExpectedShippingFacts.from_mapping(
+        {
+            "store_code": store_code or "UNKNOWN",
+            "order_id": attrs.get("code") or "API_ORDER",
+            "planned_at": planned_ts,
+            "creation_at": created_ts,
+            "state": attrs.get("state"),
+            "status": attrs.get("status"),
+            "signature_required": attrs.get("signatureRequired"),
+            "pre_order": attrs.get("preOrder"),
+            "delivery_mode": attrs.get("deliveryMode"),
+            "returned_to_warehouse": attrs.get("returnedToWarehouse"),
+        },
+        target_date=reference_date,
+        same_day_cutoff=_get_cutoff_time(store_code=store_code),
+    )
+    resolved = api_fallback.evaluate(facts).projection
+    return date.fromisoformat(resolved) if resolved is not None else None
