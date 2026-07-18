@@ -3,6 +3,8 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 import scripts.recover_order_entries_from_evidence as recovery
 from scripts.recover_order_entries_from_evidence import (
     EvidenceRow,
@@ -114,6 +116,7 @@ def _evidence(
     offer_id: str = "ARTICLE-1",
     sku_id: str | None = None,
     source_row_number: int = 2,
+    business_date: str = "2026-01-02",
 ) -> EvidenceRow:
     return EvidenceRow(
         source_name=source_name,
@@ -122,6 +125,7 @@ def _evidence(
         order_id=order_id,
         store_code=store_code,
         quantity=1.0,
+        business_date=business_date,
         offer_id=offer_id,
         unit_price_kzt=1000.0,
         total_price_kzt=1000.0,
@@ -174,8 +178,62 @@ def test_non_api_provenance_key_is_deterministic() -> None:
     changed = _evidence("CURRENT_CRM", source_row_number=3)
 
     assert make_non_api_entry_id(row) == make_non_api_entry_id(same)
-    assert make_non_api_entry_id(row) != make_non_api_entry_id(changed)
-    assert make_non_api_entry_id(row).startswith("RECOV-CURRENT_CRM-")
+    assert make_non_api_entry_id(row) == make_non_api_entry_id(changed)
+    assert make_non_api_entry_id(row).startswith("RECOV-WORKBOOK-")
+
+
+def test_workbook_lifecycle_snapshots_supersede_by_public_offer_grain() -> None:
+    earlier = _evidence(
+        "CURRENT_CRM", source_row_number=20, business_date="2026-01-02"
+    )
+    later = _evidence(
+        "CURRENT_CRM", source_row_number=9, business_date="2026-01-03"
+    )
+    later = EvidenceRow(
+        **{
+            **later.__dict__,
+            "sku_id": "SKU_XL",
+            "my_size": "XL",
+            "total_price_kzt": 1200.0,
+        }
+    )
+
+    deduped = dedupe_evidence_rows([later, earlier])
+
+    assert len(deduped) == 1
+    assert deduped[0].source_row_number == 9
+    assert deduped[0].sku_id == "SKU_XL"
+    assert make_non_api_entry_id(earlier) == make_non_api_entry_id(later)
+
+
+def test_workbook_entry_id_is_stable_across_source_names_and_paths() -> None:
+    current = _evidence("CURRENT_CRM")
+    reserve = _evidence("RESERVE_ARCHIVE_WORKBOOK")
+
+    assert make_non_api_entry_id(current) == make_non_api_entry_id(reserve)
+
+
+def test_workbook_same_rank_conflict_fails_closed() -> None:
+    first = _evidence("CURRENT_CRM", source_row_number=5)
+    conflict = EvidenceRow(
+        **{
+            **first.__dict__,
+            "quantity": 2.0,
+            "total_price_kzt": 2000.0,
+        }
+    )
+
+    with pytest.raises(recovery.RecoveryError, match="irreconcilable workbook snapshots"):
+        dedupe_evidence_rows([first, conflict])
+
+
+def test_workbook_distinct_public_offers_remain_distinct_lines() -> None:
+    first = _evidence("CURRENT_CRM", offer_id="ARTICLE-1")
+    second = _evidence("CURRENT_CRM", offer_id="ARTICLE-2", source_row_number=3)
+
+    deduped = dedupe_evidence_rows([first, second])
+
+    assert [row.offer_id for row in deduped] == ["ARTICLE-1", "ARTICLE-2"]
 
 
 def test_api_dedupe_uses_stable_entry_source_key() -> None:
@@ -191,6 +249,35 @@ def test_api_dedupe_uses_stable_entry_source_key() -> None:
     deduped = dedupe_evidence_rows([row, duplicate, other])
 
     assert [item.entry_id for item in deduped] == ["entry-1", "entry-2"]
+
+
+def test_api_distinct_entry_ids_preserve_same_offer_multiline_order() -> None:
+    first = _evidence(
+        "API_RAW_ORDER_ENTRIES",
+        source_kind="api_raw_order_entry",
+        entry_id="entry-1",
+    )
+    second = _evidence(
+        "API_RAW_ORDER_ENTRIES",
+        source_kind="api_raw_order_entry",
+        entry_id="entry-2",
+    )
+
+    deduped = dedupe_evidence_rows([first, second])
+
+    assert [item.entry_id for item in deduped] == ["entry-1", "entry-2"]
+
+
+def test_api_same_entry_id_conflicting_payload_fails_closed() -> None:
+    first = _evidence(
+        "API_RAW_ORDER_ENTRIES",
+        source_kind="api_raw_order_entry",
+        entry_id="entry-1",
+    )
+    conflict = EvidenceRow(**{**first.__dict__, "quantity": 2.0})
+
+    with pytest.raises(recovery.RecoveryError, match="immutable API entry_id"):
+        dedupe_evidence_rows([first, conflict])
 
 
 def test_workbook_raw_json_redacts_pii_fields() -> None:

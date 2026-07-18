@@ -163,6 +163,7 @@ class EvidenceRow:
     order_id: str
     store_code: str
     quantity: float
+    business_date: str = ""
     offer_id: str = ""
     unit_price_kzt: float | None = None
     total_price_kzt: float | None = None
@@ -760,6 +761,9 @@ def read_workbook_evidence(
                 continue
             store = normalize_store(_pick(row, headers_by_name, "STORE_NAME", "store_code"))
             quantity = coerce_float(_pick(row, headers_by_name, "Quantity", "Количество"))
+            business_date = parse_date(
+                _pick(row, headers_by_name, "Date", "Дата изменения статуса", "Дата поступления заказа")
+            )
             offer_id = norm(_pick(row, headers_by_name, "SKU_ID_KSP", "Артикул"))
             sku_id = norm(_pick(row, headers_by_name, "SKU_ID"))
             sku_key = norm(_pick(row, headers_by_name, "SKU_key"))
@@ -787,6 +791,7 @@ def read_workbook_evidence(
                 order_id=order_id,
                 store_code=store,
                 quantity=quantity or 0.0,
+                business_date=business_date,
                 offer_id=offer_id,
                 sku_id=sku_id,
                 sku_key=sku_key,
@@ -888,6 +893,12 @@ def read_webui_csv_evidence(paths: list[Path]) -> dict[tuple[str, str], list[Evi
                     order_id=order_id,
                     store_code=store,
                     quantity=quantity,
+                    business_date=parse_date(
+                        row.get("status_change_at")
+                        or row.get("Date")
+                        or row.get("Дата изменения статуса")
+                        or row.get("Дата поступления заказа")
+                    ),
                     offer_id=norm(row.get("article") or row.get("Артикул")),
                     total_price_kzt=coerce_float(row.get("net_rev_kzt") or row.get("Сумма")),
                     delivery_cost_kzt=coerce_float(
@@ -911,36 +922,75 @@ def merge_source_maps(*maps: dict[tuple[str, str], list[EvidenceRow]]) -> dict[t
 
 
 def dedupe_evidence_rows(rows: list[EvidenceRow]) -> list[EvidenceRow]:
+    """Project evidence to one current row per source-stable line identity.
+
+    Real API entries retain their immutable entry IDs. Workbook evidence has no
+    entry ID, so row numbers are provenance/ranking only: repeated lifecycle
+    snapshots for the same order/store/public offer supersede each other rather
+    than becoming separate order lines.
+    """
     out: list[EvidenceRow] = []
-    seen: set[tuple[Any, ...]] = set()
+    positions: dict[tuple[Any, ...], int] = {}
+
+    def _position(row: EvidenceRow) -> tuple[str, int, int, int]:
+        return (
+            row.business_date or "",
+            int(row.source_row_number or -1),
+            int(row.source_line_number or -1),
+            int(row.entry_index or -1),
+        )
+
+    def _material(row: EvidenceRow) -> tuple[Any, ...]:
+        return (
+            row.order_id,
+            row.store_code,
+            row.offer_id.upper(),
+            row.product_id.upper(),
+            float(row.quantity or 0.0),
+            row.unit_price_kzt,
+            row.total_price_kzt,
+            row.sku_key,
+            row.sku_id,
+            row.my_size,
+        )
+
     for row in rows:
         if row.entry_id:
             sig = (
-                row.source_kind,
+                "API_ENTRY_ID",
                 row.entry_id,
-                row.order_id,
-                row.store_code,
-                row.offer_id.upper(),
-                str(row.quantity),
-                str(row.total_price_kzt or row.unit_price_kzt or ""),
             )
         else:
+            public_offer_identity = row.offer_id.upper() or row.product_id.upper()
+            if not public_offer_identity:
+                raise RecoveryError(
+                    f"non-API evidence lacks public-offer identity for {row.order_id}"
+                )
             sig = (
-                row.source_kind,
-                str(row.source_path),
-                row.source_sheet,
-                row.source_row_number,
-                row.source_line_number,
-                row.entry_index,
+                "WORKBOOK_PUBLIC_OFFER",
                 row.order_id,
                 row.store_code,
-                row.offer_id.upper(),
-                str(row.quantity),
+                public_offer_identity,
             )
-        if sig in seen:
+        existing_position = positions.get(sig)
+        if existing_position is None:
+            positions[sig] = len(out)
+            out.append(row)
             continue
-        seen.add(sig)
-        out.append(row)
+        if row.entry_id:
+            if _material(row) != _material(out[existing_position]):
+                raise RecoveryError(
+                    f"conflicting payloads for immutable API entry_id {row.entry_id}"
+                )
+            continue
+        current = out[existing_position]
+        if _position(row) == _position(current) and _material(row) != _material(current):
+            raise RecoveryError(
+                "irreconcilable workbook snapshots share the same business-date/rank: "
+                f"{row.order_id}:{row.store_code}:{public_offer_identity}"
+            )
+        if _position(row) >= _position(current):
+            out[existing_position] = row
     return out
 
 
@@ -992,22 +1042,18 @@ def assign_evidence_to_targets(
 
 
 def make_non_api_entry_id(row: EvidenceRow) -> str:
+    public_offer_identity = row.offer_id.upper() or row.product_id.upper()
+    if not public_offer_identity:
+        raise RecoveryError(
+            f"non-API evidence lacks public-offer identity for {row.order_id}"
+        )
     seed = {
-        "source_name": row.source_name,
-        "source_kind": row.source_kind,
-        "source_path": str(row.source_path),
-        "source_sheet": row.source_sheet,
-        "source_row_number": row.source_row_number,
-        "source_line_number": row.source_line_number,
-        "entry_index": row.entry_index,
+        "identity_version": 2,
         "order_id": row.order_id,
         "store_code": row.store_code,
-        "offer_id": row.offer_id,
-        "quantity": row.quantity,
-        "sku_id": row.sku_id,
-        "total_price_kzt": row.total_price_kzt,
+        "public_offer_identity": public_offer_identity,
     }
-    return f"RECOV-{row.source_name}-{_hash_text(json.dumps(seed, sort_keys=True, default=_json_default))[:32]}"
+    return f"RECOV-WORKBOOK-{_hash_text(json.dumps(seed, sort_keys=True, default=_json_default))[:32]}"
 
 
 def _raw_json_for_entry(row: EvidenceRow) -> str:
@@ -1205,6 +1251,64 @@ def _existing_entry_ids(conn: sqlite3.Connection, entry_ids: list[str]) -> set[s
     return existing
 
 
+def _logical_entry_key(entry: dict[str, Any]) -> tuple[str, str, str]:
+    public_offer_identity = str(entry.get("offer_id") or entry.get("product_id") or "").strip().upper()
+    return (
+        str(entry.get("order_id") or "").strip(),
+        str(entry.get("store_code") or "").strip().upper(),
+        public_offer_identity,
+    )
+
+
+def _legacy_logical_entry_collisions(
+    conn: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    exact_existing_ids: set[str],
+) -> list[dict[str, Any]]:
+    target_pairs = sorted(
+        {
+            (key[0], key[1])
+            for key in (_logical_entry_key(candidate) for candidate in candidates)
+            if key[0] and key[1]
+        }
+    )
+    existing_by_key: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    for order_id, store_code in target_pairs:
+        rows = conn.execute(
+            """
+            SELECT entry_id, order_id, store_code, offer_id, product_id
+            FROM fact_order_entries_kaspi
+            WHERE CAST(order_id AS TEXT) = ? AND UPPER(COALESCE(store_code, '')) = ?
+            """,
+            (order_id, store_code),
+        ).fetchall()
+        for row in rows:
+            payload = dict(row) if isinstance(row, sqlite3.Row) else {
+                "entry_id": row[0],
+                "order_id": row[1],
+                "store_code": row[2],
+                "offer_id": row[3],
+                "product_id": row[4],
+            }
+            existing_by_key[_logical_entry_key(payload)].append(str(payload["entry_id"]))
+    collisions: list[dict[str, Any]] = []
+    for candidate in candidates:
+        entry_id = str(candidate.get("entry_id") or "")
+        existing_ids = existing_by_key.get(_logical_entry_key(candidate), [])
+        legacy_ids = [value for value in existing_ids if value not in exact_existing_ids]
+        if legacy_ids and entry_id not in existing_ids:
+            collisions.append(
+                {
+                    "order_id": candidate.get("order_id"),
+                    "store_code": candidate.get("store_code"),
+                    "offer_id": candidate.get("offer_id"),
+                    "candidate_entry_id": entry_id,
+                    "existing_entry_ids": legacy_ids,
+                }
+            )
+    return collisions
+
+
 def _insert_entries(conn: sqlite3.Connection, entries: list[dict[str, Any]]) -> int:
     cols = _columns(conn, "fact_order_entries_kaspi")
     if not cols:
@@ -1238,7 +1342,7 @@ def _insert_entries(conn: sqlite3.Connection, entries: list[dict[str, Any]]) -> 
     for entry in entries:
         values = [entry.get(col) for col in insert_cols]
         cur = conn.execute(
-            f"INSERT OR IGNORE INTO fact_order_entries_kaspi ({columns_sql}) VALUES ({placeholders})",
+            f"INSERT INTO fact_order_entries_kaspi ({columns_sql}) VALUES ({placeholders})",
             values,
         )
         inserted += int(cur.rowcount or 0)
@@ -1534,7 +1638,14 @@ def recover_order_entries(
         production_apply = False
         conn_cm = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     with conn_cm as conn:
+        conn.row_factory = sqlite3.Row
         existing = _existing_entry_ids(conn, [entry["entry_id"] for entry in candidates])
+        logical_collisions = _legacy_logical_entry_collisions(conn, candidates, existing)
+        if logical_collisions:
+            raise RecoveryError(
+                "refusing recovered-entry insert over existing logical public-offer identities: "
+                f"{logical_collisions[:5]}"
+            )
         new_candidates = [entry for entry in candidates if entry["entry_id"] not in existing]
         inserted = 0
         if apply:
