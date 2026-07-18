@@ -25,7 +25,7 @@ from scripts.validate_line31_launch_readiness import (  # noqa: E402
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation"
 DEFAULT_APPROVAL_PHRASE_PATH = (
-    DEFAULT_EVIDENCE_ROOT / "final_creative_publish_intake_and_approval.md"
+    Path("/absolute/path/to/current_sha_bound_owner_approval_phrase.txt")
 )
 FINAL_CHECK_COMMANDS = [
     "python3 scripts/build_line31_current_noncreative_gate_matrix.py --json",
@@ -101,6 +101,7 @@ def _one_shot_command(*, asset_dir: Path, approval_text_file: Path, final_asset_
         "--landing-url 'https://acmewear.pro/line31' "
         "--kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' "
         "--creative-ready-declared "
+        f"--approval-phrase-path {DEFAULT_APPROVAL_PHRASE_PATH} "
         f"--approval-text-file {approval_text_file} "
         "--tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json "
         "--overwrite "

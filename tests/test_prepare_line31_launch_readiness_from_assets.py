@@ -8,6 +8,8 @@ import sys
 
 from scripts.validate_line31_final_creative_mapping import required_owner_approval_phrase
 
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
+
 
 def _write_media(tmp_path: Path) -> tuple[Path, Path]:
     video = tmp_path / "final.mp4"
@@ -47,6 +49,8 @@ def _base_command(tmp_path: Path, *, run_id: str) -> tuple[list[str], Path, Path
             str(tmp_path / "noncreative"),
             "--approval-output-dir",
             str(tmp_path / "approvals"),
+            "--approval-phrase-path",
+            str(SYNTHETIC_APPROVAL),
             "--run-id",
             run_id,
             "--json",
@@ -57,12 +61,7 @@ def _base_command(tmp_path: Path, *, run_id: str) -> tuple[list[str], Path, Path
 
 
 def _approval_text(tmp_path: Path) -> Path:
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     approval = tmp_path / "approval.txt"
     approval.write_text(
         f"Owner approval captured for launch-day test.\n\n{phrase}\n",
@@ -151,7 +150,7 @@ def test_prepare_launch_readiness_creative_ready_pending_approval(tmp_path: Path
     payload = json.loads(completed.stdout)
     assert payload["gate"] == "YELLOW_OWNER_SOURCE_FRESHNESS_BLOCKERS"
     assert payload["ready_to_publish"] is False
-    assert payload["pending_ok"] is True
+    assert payload["pending_ok"] is False
     assert payload["strict_ok"] is False
     assert payload["owner_source_freshness_ok"] is False
     assert payload["source_freshness_blockers"]
@@ -199,6 +198,8 @@ def test_prepare_launch_readiness_detects_asset_dir_inputs(tmp_path: Path) -> No
             str(tmp_path / "noncreative"),
             "--approval-output-dir",
             str(tmp_path / "approvals"),
+            "--approval-phrase-path",
+            str(SYNTHETIC_APPROVAL),
             "--run-id",
             "asset_dir",
             "--creative-ready-declared",
@@ -258,6 +259,8 @@ def test_prepare_launch_readiness_asset_dir_with_approval_is_launch_ready(
             str(tmp_path / "noncreative"),
             "--approval-output-dir",
             str(tmp_path / "approvals"),
+            "--approval-phrase-path",
+            str(SYNTHETIC_APPROVAL),
             "--run-id",
             "asset_dir_approved",
             "--creative-ready-declared",
@@ -322,6 +325,8 @@ def test_prepare_launch_readiness_rejects_ambiguous_asset_dir(tmp_path: Path) ->
             str(tmp_path / "noncreative"),
             "--approval-output-dir",
             str(tmp_path / "approvals"),
+            "--approval-phrase-path",
+            str(SYNTHETIC_APPROVAL),
             "--run-id",
             "ambiguous_asset_dir",
             "--creative-ready-declared",

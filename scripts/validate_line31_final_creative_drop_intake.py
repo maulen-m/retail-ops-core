@@ -20,14 +20,9 @@ from scripts.prepare_line31_launch_readiness_from_assets import (  # noqa: E402
     DEFAULT_APPROVAL_PHRASE_PATH,
     _resolve_asset_inputs,
 )
-from scripts.validate_line31_final_creative_mapping import validate_mapping  # noqa: E402
-
-DEFAULT_TEMPLATE = (
-    PROJECT_ROOT
-    / "exports"
-    / "validation"
-    / "line31_goal_stock_dashboard_repair_20260601_133438"
-    / "final_creative_asset_mapping_template.json"
+from scripts.validate_line31_final_creative_mapping import (  # noqa: E402
+    DEFAULT_TEMPLATE,
+    validate_mapping,
 )
 DEFAULT_FINAL_ASSET_URI = "https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4"
 DEFAULT_LANDING_URL = "https://acmewear.pro/line31"

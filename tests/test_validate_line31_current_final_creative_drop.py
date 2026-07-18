@@ -5,12 +5,15 @@ from pathlib import Path
 import subprocess
 import sys
 
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
+
 
 def _write_status(path: Path, asset_dir: Path, approval_text_file: Path | None = None) -> None:
     path.write_text(
         json.dumps(
             {
                 "generated_at": "2026-06-01T21:00:00+05:00",
+                "approval_phrase_path": str(SYNTHETIC_APPROVAL),
                 "latest_drop_intake": {
                     "dir": str(asset_dir.parent),
                     "asset_dir": str(asset_dir),
@@ -131,6 +134,7 @@ def test_current_drop_validator_uses_current_approval_file_when_required(
     payload = json.loads(completed.stdout)
     assert payload["gate"] == "NOT_READY"
     assert payload["effective_approval_text_file"] == str(approval_text_file)
+    assert payload["effective_approval_phrase_path"] == str(SYNTHETIC_APPROVAL)
     assert (
         payload["validator"]["approval_error"]
         == "approval evidence file does not contain the exact required owner approval phrase"

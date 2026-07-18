@@ -7,6 +7,8 @@ import sys
 
 from scripts.validate_line31_final_creative_mapping import required_owner_approval_phrase
 
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
+
 
 def test_create_line31_final_creative_drop_intake(tmp_path: Path) -> None:
     completed = subprocess.run(
@@ -76,12 +78,7 @@ def test_create_line31_final_creative_drop_intake(tmp_path: Path) -> None:
     assert checklist["safety_boundaries"]["publishes_meta"] is False
     assert checklist["approval_policy"]["standalone_approval_requires_mapping_ready"] is True
     assert checklist["approval_policy"]["strict_publish_requires_tracking_redirect_qa"] is True
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     assert phrase not in approval_text_file.read_text(encoding="utf-8")
 
 

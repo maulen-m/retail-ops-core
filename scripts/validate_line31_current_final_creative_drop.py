@@ -52,6 +52,11 @@ def validate_current_drop(args: argparse.Namespace) -> dict[str, Any]:
     status = _load_json(status_path)
     latest = _latest_drop(status)
     asset_dir = Path(str(latest["asset_dir"]))
+    approval_phrase_path = args.approval_phrase_path
+    if approval_phrase_path == DEFAULT_APPROVAL_PHRASE_PATH:
+        current_phrase = str(status.get("approval_phrase_path") or "").strip()
+        if current_phrase:
+            approval_phrase_path = Path(current_phrase)
     approval_text_file = args.approval_text_file
     if args.use_current_approval_file or (args.require_approval and not approval_text_file):
         current_approval = latest.get("approval_text_file")
@@ -76,7 +81,7 @@ def validate_current_drop(args: argparse.Namespace) -> dict[str, Any]:
             primary_cta=args.primary_cta,
             owner_notes=args.owner_notes,
             approval_text_file=approval_text_file,
-            approval_phrase_path=args.approval_phrase_path,
+            approval_phrase_path=approval_phrase_path,
             tracking_qa_evidence_file=args.tracking_qa_evidence_file,
             require_approval=args.require_approval,
         )
@@ -94,6 +99,7 @@ def validate_current_drop(args: argparse.Namespace) -> dict[str, Any]:
             "manifest": latest.get("manifest", ""),
         },
         "effective_approval_text_file": str(approval_text_file or ""),
+        "effective_approval_phrase_path": str(approval_phrase_path or ""),
         "validator": validator_payload,
         "no_external_writes_performed": True,
     }

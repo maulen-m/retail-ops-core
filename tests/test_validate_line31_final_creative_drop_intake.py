@@ -7,6 +7,8 @@ import sys
 
 from scripts.validate_line31_final_creative_mapping import required_owner_approval_phrase
 
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
+
 
 def _write_assets(asset_dir: Path) -> tuple[Path, Path]:
     asset_dir.mkdir()
@@ -165,12 +167,7 @@ def test_validate_drop_intake_assets_and_urls_ready_pending_approval(tmp_path: P
 def test_validate_drop_intake_can_require_exact_approval(tmp_path: Path) -> None:
     asset_dir = tmp_path / "final_assets"
     _write_assets(asset_dir)
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     approval = tmp_path / "approval.txt"
     approval.write_text(f"Owner approval.\n\n{phrase}\n", encoding="utf-8")
     tracking = _write_tracking_qa_evidence(tmp_path)
@@ -187,6 +184,8 @@ def test_validate_drop_intake_can_require_exact_approval(tmp_path: Path) -> None
             "https://kaspi.kz/shop/p/sportivnyi-kostjum-acmewear-of-line31-st-black-123456789/",
             "--approval-text-file",
             str(approval),
+            "--approval-phrase-path",
+            str(SYNTHETIC_APPROVAL),
             "--tracking-qa-evidence-file",
             str(tracking),
             "--require-approval",
