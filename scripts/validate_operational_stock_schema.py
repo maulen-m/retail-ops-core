@@ -232,6 +232,47 @@ REQUIRED_INDEXES = {
     "ux_return_qc_event_idempotency",
 }
 
+SOURCE_LINE_REQUIRED_TABLES: dict[str, set[str]] = {
+    "fact_orders_kaspi": {"source_entry_id", "kaspi_article", "line_identity_key"},
+    "sales_fact_v2": {"source_entry_id", "kaspi_article", "line_identity_key"},
+    "fact_sales": {"source_entry_id", "kaspi_article", "line_identity_key"},
+    "stock_ledger": {
+        "source_entry_id",
+        "kaspi_article",
+        "line_identity_key",
+        "source_store_code",
+        "repair_batch_id",
+        "supersedes_ledger_id",
+    },
+    "stock_ledger_source_identity": {
+        "ledger_id",
+        "source_entry_id",
+        "source_store_code",
+        "kaspi_article",
+        "line_identity_key",
+        "repair_batch_id",
+    },
+}
+
+SOURCE_LINE_REQUIRED_INDEXES = {
+    "ux_fact_orders_kaspi_source_entry_id",
+    "ux_fact_orders_kaspi_order_store_article_fallback",
+    "ux_fact_orders_kaspi_order_store_line_identity",
+    "ux_sales_fact_v2_source_entry_id",
+    "ux_sales_fact_v2_order_store_article_fallback",
+    "ux_sales_fact_v2_order_store_line_identity",
+    "ux_fact_sales_source_entry_id",
+    "ux_fact_sales_order_store_article_fallback",
+    "ux_fact_sales_order_store_line_identity",
+    "idx_stock_ledger_order_line_identity",
+    "ux_stock_ledger_supersedes_ledger_id",
+}
+
+MUTABLE_LEGACY_UNIQUE_TOKENS = {
+    "sales_fact_v2": "UNIQUE(ORDER_ID,SKU_ID,STORE_CODE,KASPI_OFFER_NAME)",
+    "fact_sales": "UNIQUE(ORDER_ID,KASPI_OFFER_NAME,SKU_ID,STORE_CODE)",
+}
+
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
@@ -253,7 +294,15 @@ def _index_exists(conn: sqlite3.Connection, index_name: str) -> bool:
     return row is not None
 
 
-def validate_operational_stock_schema(db_path: Path) -> list[str]:
+def _compact_sql(value: str) -> str:
+    return "".join(str(value or "").upper().split()).replace('"', "")
+
+
+def validate_operational_stock_schema(
+    db_path: Path,
+    *,
+    require_source_line_grain: bool = False,
+) -> list[str]:
     errors: list[str] = []
     conn = sqlite3.connect(str(db_path))
     try:
@@ -269,6 +318,30 @@ def validate_operational_stock_schema(db_path: Path) -> list[str]:
         for index_name in sorted(REQUIRED_INDEXES):
             if not _index_exists(conn, index_name):
                 errors.append(f"Missing index: {index_name}")
+
+        if require_source_line_grain:
+            for table, required_columns in SOURCE_LINE_REQUIRED_TABLES.items():
+                if not _table_exists(conn, table):
+                    errors.append(f"Missing source-line table: {table}")
+                    continue
+                missing = sorted(required_columns - _table_columns(conn, table))
+                if missing:
+                    errors.append(
+                        f"{table} missing source-line columns: {', '.join(missing)}"
+                    )
+            for index_name in sorted(SOURCE_LINE_REQUIRED_INDEXES):
+                if not _index_exists(conn, index_name):
+                    errors.append(f"Missing source-line index: {index_name}")
+            for table, token in MUTABLE_LEGACY_UNIQUE_TOKENS.items():
+                row = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,),
+                ).fetchone()
+                if row and token in _compact_sql(str(row[0] or "")):
+                    errors.append(
+                        f"Legacy mutable UNIQUE constraint remains on {table}; "
+                        "source-line production rollout is blocked"
+                    )
     finally:
         conn.close()
     return errors
@@ -278,12 +351,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate P0 operational stock truth schema")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--require-source-line-grain", action="store_true")
     args = parser.parse_args()
 
     if not args.db.exists():
         errors = [f"Database not found: {args.db}"]
     else:
-        errors = validate_operational_stock_schema(args.db)
+        errors = validate_operational_stock_schema(
+            args.db,
+            require_source_line_grain=bool(args.require_source_line_grain),
+        )
 
     if args.json:
         print(json.dumps({"ok": not errors, "errors": errors}, ensure_ascii=False, indent=2))
