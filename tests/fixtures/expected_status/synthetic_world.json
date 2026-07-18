@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "target_date": "2026-07-18",
+  "now": "2026-07-18T17:30:00+05:00",
+  "ready_set_at": "2026-07-18T17:00:00+05:00",
+  "orders": [
+    {
+      "key": "overdue_accepted_no_waybill",
+      "order_id": "G01",
+      "store_code": "Universal",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "ACCEPTED",
+      "size": "L"
+    },
+    {
+      "key": "overdue_assembled_waybill",
+      "order_id": "G02",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "READY",
+      "size": "XL",
+      "waybill_url": "https://example.invalid/G02.pdf",
+      "waybill_downloaded": 1
+    },
+    {
+      "key": "today_before_cutoff_warehouse_alias",
+      "order_id": "G03",
+      "store_code": "30000001_PP1",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T16:59:59+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "ACCEPTED",
+      "size": "M"
+    },
+    {
+      "key": "today_after_cutoff_display_alias",
+      "order_id": "G04",
+      "store_code": "Universal",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T17:00:01+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "ACCEPTED",
+      "size": "M"
+    },
+    {
+      "key": "future_planned",
+      "order_id": "G05",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-19",
+      "created_at": "2026-07-18T17:01:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "ACCEPTED",
+      "size": "L"
+    },
+    {
+      "key": "physical_handover_courier_date",
+      "order_id": "G06",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "SHIPPED",
+      "size": "L",
+      "waybill_url": "https://example.invalid/G06.pdf",
+      "courier_transmission_date": "2026-07-17T18:00:00+05:00"
+    },
+    {
+      "key": "delivery_state",
+      "order_id": "G07",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "SHIPPED",
+      "size": "L"
+    },
+    {
+      "key": "pickup_state",
+      "order_id": "G08",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "PICKUP",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "SHIPPED",
+      "size": "L"
+    },
+    {
+      "key": "archive_ambiguous",
+      "order_id": "G09",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "ARCHIVE",
+      "status": "",
+      "internal_status": "",
+      "size": "L"
+    },
+    {
+      "key": "archive_completed",
+      "order_id": "G10",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "ARCHIVE",
+      "status": "COMPLETED",
+      "internal_status": "COMPLETED",
+      "size": "L"
+    },
+    {
+      "key": "archive_cancelled",
+      "order_id": "G11",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "ARCHIVE",
+      "status": "CANCELLED",
+      "internal_status": "CANCELLED",
+      "size": "L"
+    },
+    {
+      "key": "archive_cancelling_suspended",
+      "order_id": "G12",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "ARCHIVE",
+      "status": "CANCELLING",
+      "internal_status": "CANCELLING",
+      "size": "L"
+    },
+    {
+      "key": "archive_return_requested_suspended",
+      "order_id": "G13",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "ARCHIVE",
+      "status": "RETURN_REQUESTED",
+      "internal_status": "RETURN_REQUESTED",
+      "size": "L"
+    },
+    {
+      "key": "archive_returned",
+      "order_id": "G14",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "ARCHIVE",
+      "status": "RETURNED",
+      "internal_status": "RETURNED",
+      "size": "L"
+    },
+    {
+      "key": "returned_to_warehouse_flag",
+      "order_id": "G15",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "RETURNED",
+      "size": "L",
+      "returned_to_warehouse": 1
+    },
+    {
+      "key": "signature_required_state",
+      "order_id": "G16",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T10:00:00+05:00",
+      "state": "SIGN_REQUIRED",
+      "status": "APPROVED_BY_BANK",
+      "internal_status": "NEW",
+      "size": "L",
+      "signature_required": 1
+    },
+    {
+      "key": "preorder_in_transit",
+      "order_id": "G17",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T10:00:00+05:00",
+      "state": "NEW",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "NEW",
+      "size": "L",
+      "pre_order": 1
+    },
+    {
+      "key": "new_approved",
+      "order_id": "G18",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T10:00:00+05:00",
+      "state": "NEW",
+      "status": "APPROVED_BY_BANK",
+      "internal_status": "NEW",
+      "size": "L"
+    },
+    {
+      "key": "unknown_state",
+      "order_id": "G19",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T10:00:00+05:00",
+      "state": "MYSTERY",
+      "status": "MYSTERY_DETAIL",
+      "internal_status": "",
+      "size": "L"
+    },
+    {
+      "key": "internal_completed_without_api_detail",
+      "order_id": "G20",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-17",
+      "created_at": "2026-07-17T10:00:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "",
+      "internal_status": "COMPLETED",
+      "size": "L"
+    },
+    {
+      "key": "today_waybill_url_assembled",
+      "order_id": "G21",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T10:00:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "READY",
+      "size": "2XL",
+      "waybill_url": "https://example.invalid/G21.pdf"
+    },
+    {
+      "key": "today_exact_cutoff",
+      "order_id": "G22",
+      "store_code": "UNIVERSAL",
+      "planned_date": "2026-07-18",
+      "created_at": "2026-07-18T17:00:00+05:00",
+      "state": "KASPI_DELIVERY",
+      "status": "ACCEPTED_BY_MERCHANT",
+      "internal_status": "ACCEPTED",
+      "size": "S"
+    }
+  ],
+  "api_date_cases": [
+    {
+      "key": "explicit_planned_wins",
+      "store_code": "UNIVERSAL",
+      "creation_at": "2026-07-18T10:00:00+05:00",
+      "planned_at": "2026-07-19T09:00:00+05:00"
+    },
+    {
+      "key": "fallback_before_cutoff",
+      "store_code": "30000001_PP1",
+      "creation_at": "2026-07-18T16:59:59+05:00"
+    },
+    {
+      "key": "fallback_exact_cutoff",
+      "store_code": "Universal",
+      "creation_at": "2026-07-18T17:00:00+05:00"
+    },
+    {
+      "key": "fallback_after_cutoff",
+      "store_code": "UNIVERSAL",
+      "creation_at": "2026-07-18T17:00:01+05:00"
+    },
+    {
+      "key": "missing_dates",
+      "store_code": "UNIVERSAL"
+    }
+  ],
+  "group_cases": [
+    {
+      "key": "today_only",
+      "store": "Universal",
+      "planned_dates": ["2026-07-18"]
+    },
+    {
+      "key": "overdue_only",
+      "store": "Universal",
+      "planned_dates": ["2026-07-17"]
+    },
+    {
+      "key": "mixed_group_min_date_wins",
+      "store": "AcmeWear",
+      "planned_dates": ["2026-07-18", "2026-07-17"]
+    },
+    {
+      "key": "future_is_rendered_today",
+      "store": "AcmeWear",
+      "planned_dates": ["2026-07-19"]
+    },
+    {
+      "key": "missing_date_is_rendered_today",
+      "store": "STORE-B",
+      "planned_dates": [null]
+    }
+  ]
+}

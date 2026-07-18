@@ -1,0 +1,1328 @@
+{
+  "api_active_ids_by_store": {
+    "STOREB": [
+      "1002220546",
+      "1002342493"
+    ],
+    "ACMEWEAR": [
+      "1001940741",
+      "1001950222",
+      "1002006269",
+      "1002118921",
+      "1002272005",
+      "1002381400",
+      "1002416572",
+      "1002440978",
+      "1002565619",
+      "1002566784"
+    ],
+    "UNIVERSAL": [
+      "1000728584",
+      "1001332156",
+      "1001433623",
+      "1001468356",
+      "1001644253",
+      "1001659334",
+      "1001677523",
+      "1001991981",
+      "1002063668",
+      "1002192423",
+      "1002224968",
+      "1002361438",
+      "1002449476",
+      "1002495412",
+      "1002507166",
+      "1002616958"
+    ]
+  },
+  "expected_active_ids_by_store": {
+    "STOREB": [
+      "1002220546",
+      "1002342493"
+    ],
+    "ACMEWEAR": [
+      "1001940741",
+      "1001950222",
+      "1002006269",
+      "1002118921",
+      "1002272005",
+      "1002381400",
+      "1002416572",
+      "1002440978",
+      "1002565619",
+      "1002566784"
+    ],
+    "UNIVERSAL": [
+      "1001991981",
+      "1002063668",
+      "1002192423",
+      "1002224968",
+      "1002361438",
+      "1002449476",
+      "1002495412",
+      "1002507166",
+      "1002616958"
+    ]
+  },
+  "expected_orders": {
+    "counts": {
+      "order_lines": 21,
+      "orders": 21,
+      "overdue_orders": 0
+    },
+    "counts_by_stage": {
+      "ACCEPTED_PENDING_ASSEMBLY": 14,
+      "ASSEMBLED_PENDING_HANDOVER": 7
+    },
+    "counts_by_store": {
+      "STOREB": 2,
+      "ACMEWEAR": 10,
+      "UNIVERSAL": 9
+    },
+    "expected_order_ids": [
+      "1001940741",
+      "1001950222",
+      "1001991981",
+      "1002006269",
+      "1002063668",
+      "1002118921",
+      "1002192423",
+      "1002220546",
+      "1002224968",
+      "1002272005",
+      "1002342493",
+      "1002361438",
+      "1002381400",
+      "1002416572",
+      "1002440978",
+      "1002449476",
+      "1002495412",
+      "1002507166",
+      "1002565619",
+      "1002566784",
+      "1002616958"
+    ],
+    "line_scope_hash": "dc1605de04ee7ea88ff7f8062f5d87dd9920330cf188144dc32e62a206a67103",
+    "orders": [
+      {
+        "assigned_size": "3XL",
+        "final_size": "3XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              490
+            ],
+            "assigned_size": "3XL",
+            "db_row_id": "37134",
+            "final_size": "3XL",
+            "kaspi_article": "CL_NEW-CLO_MEN_ROMBIK_BLACK_3XL_114632368",
+            "kaspi_name_core": "Костюм_мужской_Ромбик",
+            "kaspi_offer_name": "Спортивный костюм 2300026 черный 3XL",
+            "my_size": "",
+            "order_id": "1002220546",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO_MEN_ROMBIK_BLACK_3XL",
+            "sku_key": "CL_NEW-CLO_MEN_ROMBIK_BLACK",
+            "store_code": "STOREB"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002220546",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "STOREB"
+      },
+      {
+        "assigned_size": "4XL",
+        "final_size": "4XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              371
+            ],
+            "assigned_size": "4XL",
+            "db_row_id": "37135",
+            "final_size": "4XL",
+            "kaspi_article": "CL_OC_MEN_LINE52_BLACK_4XL_103217193",
+            "kaspi_name_core": "Принт_5в1_черный",
+            "kaspi_offer_name": "Комплект Antec RASH-921 Рашгард 5 в 1 черный 56, 58",
+            "my_size": "",
+            "order_id": "1002342493",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OC_MEN_LINE52_BLACK_4XL",
+            "sku_key": "CL_OC_MEN_LINE52_BLACK",
+            "store_code": "STOREB"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002342493",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "STOREB"
+      },
+      {
+        "assigned_size": "2XL",
+        "final_size": "2XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3467
+            ],
+            "assigned_size": "2XL",
+            "db_row_id": "37120",
+            "final_size": "2XL",
+            "kaspi_article": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_K-O_2XL_156399703",
+            "kaspi_name_core": "6в1_Черный_+Сумка",
+            "kaspi_offer_name": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL черный 2XL",
+            "my_size": "",
+            "order_id": "1001940741",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL",
+            "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1001940741",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "2XL",
+        "final_size": "2XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3839
+            ],
+            "assigned_size": "2XL",
+            "db_row_id": "37121",
+            "final_size": "2XL",
+            "kaspi_article": "OF_LINE31_ST_IP_XL",
+            "kaspi_name_core": "Женский_3в1_СИРЕНЕВЫЙ",
+            "kaspi_offer_name": "ACMEWEAR OF_LINE31_ST_SB_XL",
+            "my_size": "",
+            "order_id": "1001950222",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_XL",
+            "sku_key": "CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1001950222",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "L",
+        "final_size": "L",
+        "lines": [
+          {
+            "article_map_ids": [
+              3491
+            ],
+            "assigned_size": "L",
+            "db_row_id": "37122",
+            "final_size": "L",
+            "kaspi_article": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_K-O_TRM_M_156516950",
+            "kaspi_name_core": "6в1_Черный_+Сумка",
+            "kaspi_offer_name": "Комплект ACMEWEAR OF_SUIT-61_BLK_M черный M",
+            "my_size": "",
+            "order_id": "1002006269",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_M",
+            "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002006269",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "M",
+        "final_size": "M",
+        "lines": [
+          {
+            "article_map_ids": [
+              3854
+            ],
+            "assigned_size": "M",
+            "db_row_id": "37125",
+            "final_size": "M",
+            "kaspi_article": "OF_LINE31_ST_CGOG_S",
+            "kaspi_name_core": "Женский_3в1_ОЛИВКОВЫЙ",
+            "kaspi_offer_name": "ACMEWEAR OF_LINE31_ST_SB_XL",
+            "my_size": "",
+            "order_id": "1002118921",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_S",
+            "sku_key": "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002118921",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "M",
+        "final_size": "M",
+        "lines": [
+          {
+            "article_map_ids": [
+              3550
+            ],
+            "assigned_size": "M",
+            "db_row_id": "37130",
+            "final_size": "M",
+            "kaspi_article": "OF_LINE31_ST_IV_M",
+            "kaspi_name_core": "Женский_3в1_БЕЖЕВЫЙ",
+            "kaspi_offer_name": "Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL бежевый 46",
+            "my_size": "",
+            "order_id": "1002272005",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OF_ARC_WM_LINE31_C-011_IVORY_M",
+            "sku_key": "CL_OF_ARC_WM_LINE31_C-011_IVORY",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002272005",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "3XL",
+        "final_size": "3XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3467
+            ],
+            "assigned_size": "3XL",
+            "db_row_id": "37131",
+            "final_size": "3XL",
+            "kaspi_article": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_K-O_2XL_156399703",
+            "kaspi_name_core": "6в1_Черный_+Сумка",
+            "kaspi_offer_name": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL черный 2XL",
+            "my_size": "",
+            "order_id": "1002381400",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL",
+            "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002381400",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "M",
+        "final_size": "M",
+        "lines": [
+          {
+            "article_map_ids": [
+              3550
+            ],
+            "assigned_size": "M",
+            "db_row_id": "37132",
+            "final_size": "M",
+            "kaspi_article": "OF_LINE31_ST_IV_M",
+            "kaspi_name_core": "Женский_3в1_БЕЖЕВЫЙ",
+            "kaspi_offer_name": "Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL бежевый 46",
+            "my_size": "",
+            "order_id": "1002416572",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OF_ARC_WM_LINE31_C-011_IVORY_M",
+            "sku_key": "CL_OF_ARC_WM_LINE31_C-011_IVORY",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002416572",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "2XL",
+        "final_size": "2XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3548
+            ],
+            "assigned_size": "2XL",
+            "db_row_id": "37133",
+            "final_size": "2XL",
+            "kaspi_article": "OF_LINE31_ST_CGOG_2XL",
+            "kaspi_name_core": "Женский_3в1_ОЛИВКОВЫЙ",
+            "kaspi_offer_name": "ACMEWEAR OF_LINE31_ST_SB_XL",
+            "my_size": "",
+            "order_id": "1002440978",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_2XL",
+            "sku_key": "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002440978",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "3XL",
+        "final_size": "3XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3470
+            ],
+            "assigned_size": "3XL",
+            "db_row_id": "37141",
+            "final_size": "3XL",
+            "kaspi_article": "CL_OC_MEN_LINE51_WHITE_K-O_ST_3XL_159719543",
+            "kaspi_name_core": "Line51",
+            "kaspi_offer_name": "Спортивный костюм ACMEWEAR OF_SUIT-61_BLK_K-O_3XL черный, белый 3XL",
+            "my_size": "",
+            "order_id": "1002565619",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OC_MEN_LINE51_WHITE_3XL",
+            "sku_key": "CL_OC_MEN_LINE51_WHITE",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002565619",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "XL",
+        "final_size": "XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3466
+            ],
+            "assigned_size": "XL",
+            "db_row_id": "37142",
+            "final_size": "XL",
+            "kaspi_article": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_K-O_XL_1_156408728",
+            "kaspi_name_core": "6в1_Черный_+Сумка",
+            "kaspi_offer_name": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL_1 черный XL",
+            "my_size": "",
+            "order_id": "1002566784",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL",
+            "sku_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+            "store_code": "ACMEWEAR"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002566784",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "ACMEWEAR"
+      },
+      {
+        "assigned_size": "L",
+        "final_size": "L",
+        "lines": [
+          {
+            "article_map_ids": [
+              3448
+            ],
+            "assigned_size": "L",
+            "db_row_id": "37119",
+            "final_size": "L",
+            "kaspi_article": "LOSINA BLACK L 50",
+            "kaspi_name_core": "Леггинсы_черные",
+            "kaspi_offer_name": "Леггинсы PRO COMBAT 2010 черный L",
+            "my_size": "",
+            "order_id": "1001991981",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO_MEN_LEG_BLACK_L",
+            "sku_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1001991981",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ASSEMBLED_PENDING_HANDOVER",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "2XL",
+        "final_size": "2XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3449
+            ],
+            "assigned_size": "2XL",
+            "db_row_id": "37123",
+            "final_size": "2XL",
+            "kaspi_article": "LOSINA BLACK 2XL 54",
+            "kaspi_name_core": "Леггинсы_черные",
+            "kaspi_offer_name": "Леггинсы PRO COMBAT 2010 черный 2XL",
+            "my_size": "",
+            "order_id": "1002063668",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO_MEN_LEG_BLACK_2XL",
+            "sku_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002063668",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ASSEMBLED_PENDING_HANDOVER",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "XL",
+        "final_size": "XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3447
+            ],
+            "assigned_size": "XL",
+            "db_row_id": "37126",
+            "final_size": "XL",
+            "kaspi_article": "LOSINA BLACK XL 52",
+            "kaspi_name_core": "Леггинсы_черные",
+            "kaspi_offer_name": "Леггинсы PRO COMBAT 2010 черный XL",
+            "my_size": "",
+            "order_id": "1002192423",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO_MEN_LEG_BLACK_XL",
+            "sku_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002192423",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ASSEMBLED_PENDING_HANDOVER",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "3XL",
+        "final_size": "3XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              689
+            ],
+            "assigned_size": "3XL",
+            "db_row_id": "37127",
+            "final_size": "3XL",
+            "kaspi_article": "CL_OC_MEN_LINE52_BLACK_120939888_54_(3XL)",
+            "kaspi_name_core": "Принт_5в1_черный",
+            "kaspi_offer_name": "Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 54",
+            "my_size": "",
+            "order_id": "1002224968",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OC_MEN_LINE52_BLACK_3XL",
+            "sku_key": "CL_OC_MEN_LINE52_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002224968",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ASSEMBLED_PENDING_HANDOVER",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "M",
+        "final_size": "M",
+        "lines": [
+          {
+            "article_map_ids": [
+              3446
+            ],
+            "assigned_size": "M",
+            "db_row_id": "37128",
+            "final_size": "M",
+            "kaspi_article": "LOSINA BLACK M 48",
+            "kaspi_name_core": "Леггинсы_черные",
+            "kaspi_offer_name": "Леггинсы PRO COMBAT 2010 черный M",
+            "my_size": "",
+            "order_id": "1002361438",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO_MEN_LEG_BLACK_M",
+            "sku_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002361438",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ASSEMBLED_PENDING_HANDOVER",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "L",
+        "final_size": "L",
+        "lines": [
+          {
+            "article_map_ids": [
+              3913
+            ],
+            "assigned_size": "L",
+            "db_row_id": "37129",
+            "final_size": "L",
+            "kaspi_article": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L_156797589",
+            "kaspi_name_core": "Nike_Футболка_черная",
+            "kaspi_offer_name": "Спортивный костюм DIVVA Рашгард черный черный 48",
+            "my_size": "",
+            "order_id": "1002449476",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK_L",
+            "sku_key": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002449476",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ASSEMBLED_PENDING_HANDOVER",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "2XL",
+        "final_size": "2XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              689
+            ],
+            "assigned_size": "2XL",
+            "db_row_id": "37137",
+            "final_size": "2XL",
+            "kaspi_article": "CL_OC_MEN_LINE52_BLACK_120939888_54_(3XL)",
+            "kaspi_name_core": "Принт_5в1_черный",
+            "kaspi_offer_name": "Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 54",
+            "my_size": "",
+            "order_id": "1002495412",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OC_MEN_LINE52_BLACK_3XL",
+            "sku_key": "CL_OC_MEN_LINE52_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002495412",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ASSEMBLED_PENDING_HANDOVER",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "3XL",
+        "final_size": "3XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              695
+            ],
+            "assigned_size": "3XL",
+            "db_row_id": "37138",
+            "final_size": "3XL",
+            "kaspi_article": "CL_OC_MEN_LINE52_BLACK_116515378_52-54_(2XL)",
+            "kaspi_name_core": "Принт_5в1_черный",
+            "kaspi_offer_name": "Спортивный костюм PRO COMBAT 528742263 черный 2XL",
+            "my_size": "",
+            "order_id": "1002507166",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_OC_MEN_LINE52_BLACK_2XL",
+            "sku_key": "CL_OC_MEN_LINE52_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002507166",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "UNIVERSAL"
+      },
+      {
+        "assigned_size": "2XL",
+        "final_size": "2XL",
+        "lines": [
+          {
+            "article_map_ids": [
+              3449
+            ],
+            "assigned_size": "2XL",
+            "db_row_id": "37140",
+            "final_size": "2XL",
+            "kaspi_article": "LOSINA BLACK 2XL 54",
+            "kaspi_name_core": "Леггинсы_черные",
+            "kaspi_offer_name": "Леггинсы PRO COMBAT 2010 черный 2XL",
+            "my_size": "",
+            "order_id": "1002616958",
+            "product_attribution_source": "article_identity",
+            "quantity": 1,
+            "sku_id": "CL_NEW-CLO_MEN_LEG_BLACK_2XL",
+            "sku_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+            "store_code": "UNIVERSAL"
+          }
+        ],
+        "my_size": "",
+        "order_id": "1002616958",
+        "overdue": false,
+        "package_count": 1,
+        "planned_shipment_date": "2026-07-18",
+        "stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "store_code": "UNIVERSAL"
+      }
+    ],
+    "overdue_order_ids": []
+  },
+  "run_control_rows": [
+    {
+      "last_orchestrator_run_id": "",
+      "last_orchestrator_status": "",
+      "last_verified_ready_at": "",
+      "notes": "",
+      "ready_for_closeout": "READY",
+      "ready_set_at": "2026-07-18T13:33:53.797119+05:00",
+      "ready_set_by": "READY_WATCHER",
+      "target_date": "2026-07-18"
+    }
+  ],
+  "salesraw_rows": [
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм 2300026 черный 3XL",
+      "Kaspi_name_core": "Костюм_мужской_Ромбик",
+      "MY_SIZE": "3XL",
+      "OrderID": "1002220546",
+      "PROBABLE_SIZE": "3XL",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_ROMBIK_BLACK",
+      "STORE_NAME": "STORE-B",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37134",
+      "_line_key": "1002220546|2026-07-18|CL_NEW-CLO_MEN_ROMBIK_BLACK|Спортивный костюм 2300026 черный 3XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Комплект Antec RASH-921 Рашгард 5 в 1 черный 56, 58",
+      "Kaspi_name_core": "Принт_5в1_черный",
+      "MY_SIZE": "4XL",
+      "OrderID": "1002342493",
+      "PROBABLE_SIZE": "4XL",
+      "Quantity": "1",
+      "SKU_key": "CL_OC_MEN_LINE52_BLACK",
+      "STORE_NAME": "STORE-B",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37135",
+      "_line_key": "1002342493|2026-07-18|CL_OC_MEN_LINE52_BLACK|Комплект Antec RASH-921 Рашгард 5 в 1 черный 56, 58|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL черный 2XL",
+      "Kaspi_name_core": "6в1_Черный_+Сумка",
+      "MY_SIZE": "2XL",
+      "OrderID": "1001940741",
+      "PROBABLE_SIZE": "2XL",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37120",
+      "_line_key": "1001940741|2026-07-18|CL_NEW-CLO2_MEN_SUIT-61_BLACK|Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL черный 2XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "STANDARD",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "ACMEWEAR OF_LINE31_ST_SB_XL",
+      "Kaspi_name_core": "Женский_3в1_СИРЕНЕВЫЙ",
+      "MY_SIZE": "2XL",
+      "OrderID": "1001950222",
+      "PROBABLE_SIZE": "XL",
+      "Quantity": "1",
+      "SKU_key": "CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37121",
+      "_line_key": "1001950222|2026-07-18|CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE|ACMEWEAR OF_LINE31_ST_SB_XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Комплект ACMEWEAR OF_SUIT-61_BLK_M черный M",
+      "Kaspi_name_core": "6в1_Черный_+Сумка",
+      "MY_SIZE": "L",
+      "OrderID": "1002006269",
+      "PROBABLE_SIZE": "M",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37122",
+      "_line_key": "1002006269|2026-07-18|CL_NEW-CLO2_MEN_SUIT-61_BLACK|Комплект ACMEWEAR OF_SUIT-61_BLK_M черный M|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "ACMEWEAR OF_LINE31_ST_SB_XL",
+      "Kaspi_name_core": "Женский_3в1_ОЛИВКОВЫЙ",
+      "MY_SIZE": "M",
+      "OrderID": "1002118921",
+      "PROBABLE_SIZE": "S",
+      "Quantity": "1",
+      "SKU_key": "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37125",
+      "_line_key": "1002118921|2026-07-18|CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN|ACMEWEAR OF_LINE31_ST_SB_XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL бежевый 46",
+      "Kaspi_name_core": "Женский_3в1_БЕЖЕВЫЙ",
+      "MY_SIZE": "M",
+      "OrderID": "1002272005",
+      "PROBABLE_SIZE": "M",
+      "Quantity": "1",
+      "SKU_key": "CL_OF_ARC_WM_LINE31_C-011_IVORY",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37130",
+      "_line_key": "1002272005|2026-07-18|CL_OF_ARC_WM_LINE31_C-011_IVORY|Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL бежевый 46|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL черный 2XL",
+      "Kaspi_name_core": "6в1_Черный_+Сумка",
+      "MY_SIZE": "3XL",
+      "OrderID": "1002381400",
+      "PROBABLE_SIZE": "2XL",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37131",
+      "_line_key": "1002381400|2026-07-18|CL_NEW-CLO2_MEN_SUIT-61_BLACK|Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_2XL черный 2XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL бежевый 46",
+      "Kaspi_name_core": "Женский_3в1_БЕЖЕВЫЙ",
+      "MY_SIZE": "M",
+      "OrderID": "1002416572",
+      "PROBABLE_SIZE": "M",
+      "Quantity": "1",
+      "SKU_key": "CL_OF_ARC_WM_LINE31_C-011_IVORY",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37132",
+      "_line_key": "1002416572|2026-07-18|CL_OF_ARC_WM_LINE31_C-011_IVORY|Спортивный костюм ACMEWEAR OF_LINE31_ST_SB_XL бежевый 46|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "ACMEWEAR OF_LINE31_ST_SB_XL",
+      "Kaspi_name_core": "Женский_3в1_ОЛИВКОВЫЙ",
+      "MY_SIZE": "2XL",
+      "OrderID": "1002440978",
+      "PROBABLE_SIZE": "2XL",
+      "Quantity": "1",
+      "SKU_key": "CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37133",
+      "_line_key": "1002440978|2026-07-18|CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN|ACMEWEAR OF_LINE31_ST_SB_XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR OF_SUIT-61_BLK_K-O_3XL черный, белый 3XL",
+      "Kaspi_name_core": "Line51",
+      "MY_SIZE": "3XL",
+      "OrderID": "1002565619",
+      "PROBABLE_SIZE": "3XL",
+      "Quantity": "1",
+      "SKU_key": "CL_OC_MEN_LINE51_WHITE",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37141",
+      "_line_key": "1002565619|2026-07-18|CL_OC_MEN_LINE51_WHITE|Спортивный костюм ACMEWEAR OF_SUIT-61_BLK_K-O_3XL черный, белый 3XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "STANDARD",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL_1 черный XL",
+      "Kaspi_name_core": "6в1_Черный_+Сумка",
+      "MY_SIZE": "XL",
+      "OrderID": "1002566784",
+      "PROBABLE_SIZE": "XL",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO2_MEN_SUIT-61_BLACK",
+      "STORE_NAME": "AcmeWear",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37142",
+      "_line_key": "1002566784|2026-07-18|CL_NEW-CLO2_MEN_SUIT-61_BLACK|Спортивный костюм ACMEWEAR CL_NEW-CLO2_MEN_SUIT-61_BLACK_XL_1 черный XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-16",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 черный M",
+      "Kaspi_name_core": "Леггинсы_черные",
+      "MY_SIZE": "M",
+      "OrderID": "1000728584",
+      "PROBABLE_SIZE": "M",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "OVERDUE",
+      "WEIGHT": "",
+      "_db_row_id": "37092",
+      "_line_key": "1000728584|2026-07-16|CL_NEW-CLO_MEN_LEG_BLACK|Леггинсы PRO COMBAT 2010 черный M|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-17",
+      "ExpressDeliveryStatus": "STANDARD",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Рашгард 5 в 1 черный 152",
+      "Kaspi_name_core": "Костюм_Ромбик_ДЕТСКИЙ",
+      "MY_SIZE": "30",
+      "OrderID": "1001332156",
+      "PROBABLE_SIZE": "30",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_KID_ROMBIK_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "OVERDUE",
+      "WEIGHT": "",
+      "_db_row_id": "37098",
+      "_line_key": "1001332156|2026-07-17|CL_NEW-CLO_KID_ROMBIK_BLACK|Рашгард 5 в 1 черный 152|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-17",
+      "ExpressDeliveryStatus": "STANDARD",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм PRO COMBAT 528742263 черный S",
+      "Kaspi_name_core": "Принт_5в1_черный",
+      "MY_SIZE": "L",
+      "OrderID": "1001433623",
+      "PROBABLE_SIZE": "M",
+      "Quantity": "1",
+      "SKU_key": "CL_OC_MEN_LINE52_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "OVERDUE",
+      "WEIGHT": "",
+      "_db_row_id": "37111",
+      "_line_key": "1001433623|2026-07-17|CL_OC_MEN_LINE52_BLACK|Спортивный костюм PRO COMBAT 528742263 черный S|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-17",
+      "ExpressDeliveryStatus": "STANDARD",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Рашгард 218596 черный 134",
+      "Kaspi_name_core": "Спортивный_3в1_десткий_черный",
+      "MY_SIZE": "26",
+      "OrderID": "1001468356",
+      "PROBABLE_SIZE": "26",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_KIDS_KID-31_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "OVERDUE",
+      "WEIGHT": "",
+      "_db_row_id": "37112",
+      "_line_key": "1001468356|2026-07-17|CL_NEW-CLO_KIDS_KID-31_BLACK|Рашгард 218596 черный 134|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-17",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Рашгард 30203092_627506878 серый 46",
+      "Kaspi_name_core": "Nike_Футболка_серая",
+      "MY_SIZE": "L",
+      "OrderID": "1001644253",
+      "PROBABLE_SIZE": "L",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_NIKE-SHIRT_GREY",
+      "STORE_NAME": "Universal",
+      "Status": "OVERDUE",
+      "WEIGHT": "",
+      "_db_row_id": "37113",
+      "_line_key": "1001644253|2026-07-17|CL_NEW-CLO_MEN_NIKE-SHIRT_GREY|Рашгард 30203092_627506878 серый 46|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-17",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 черный S",
+      "Kaspi_name_core": "Леггинсы_черные",
+      "MY_SIZE": "S",
+      "OrderID": "1001659334",
+      "PROBABLE_SIZE": "S",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "OVERDUE",
+      "WEIGHT": "",
+      "_db_row_id": "37114",
+      "_line_key": "1001659334|2026-07-17|CL_NEW-CLO_MEN_LEG_BLACK|Леггинсы PRO COMBAT 2010 черный S|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-17",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Рашгард 30203092_627506878 серый 46",
+      "Kaspi_name_core": "Nike_Футболка_серая",
+      "MY_SIZE": "L",
+      "OrderID": "1001677523",
+      "PROBABLE_SIZE": "L",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_NIKE-SHIRT_GREY",
+      "STORE_NAME": "Universal",
+      "Status": "OVERDUE",
+      "WEIGHT": "",
+      "_db_row_id": "37115",
+      "_line_key": "1001677523|2026-07-17|CL_NEW-CLO_MEN_NIKE-SHIRT_GREY|Рашгард 30203092_627506878 серый 46|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 черный L",
+      "Kaspi_name_core": "Леггинсы_черные",
+      "MY_SIZE": "L",
+      "OrderID": "1001991981",
+      "PROBABLE_SIZE": "L",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37119",
+      "_line_key": "1001991981|2026-07-18|CL_NEW-CLO_MEN_LEG_BLACK|Леггинсы PRO COMBAT 2010 черный L|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 черный 2XL",
+      "Kaspi_name_core": "Леггинсы_черные",
+      "MY_SIZE": "2XL",
+      "OrderID": "1002063668",
+      "PROBABLE_SIZE": "2XL",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37123",
+      "_line_key": "1002063668|2026-07-18|CL_NEW-CLO_MEN_LEG_BLACK|Леггинсы PRO COMBAT 2010 черный 2XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 черный XL",
+      "Kaspi_name_core": "Леггинсы_черные",
+      "MY_SIZE": "XL",
+      "OrderID": "1002192423",
+      "PROBABLE_SIZE": "XL",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37126",
+      "_line_key": "1002192423|2026-07-18|CL_NEW-CLO_MEN_LEG_BLACK|Леггинсы PRO COMBAT 2010 черный XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 54",
+      "Kaspi_name_core": "Принт_5в1_черный",
+      "MY_SIZE": "3XL",
+      "OrderID": "1002224968",
+      "PROBABLE_SIZE": "3XL",
+      "Quantity": "1",
+      "SKU_key": "CL_OC_MEN_LINE52_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37127",
+      "_line_key": "1002224968|2026-07-18|CL_OC_MEN_LINE52_BLACK|Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 54|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 черный M",
+      "Kaspi_name_core": "Леггинсы_черные",
+      "MY_SIZE": "M",
+      "OrderID": "1002361438",
+      "PROBABLE_SIZE": "M",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37128",
+      "_line_key": "1002361438|2026-07-18|CL_NEW-CLO_MEN_LEG_BLACK|Леггинсы PRO COMBAT 2010 черный M|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "STANDARD",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм DIVVA Рашгард черный черный 48",
+      "Kaspi_name_core": "Nike_Футболка_черная",
+      "MY_SIZE": "L",
+      "OrderID": "1002449476",
+      "PROBABLE_SIZE": "L",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37129",
+      "_line_key": "1002449476|2026-07-18|CL_NEW-CLO_MEN_NIKE-SHIRT_BLACK|Спортивный костюм DIVVA Рашгард черный черный 48|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "STANDARD",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 54",
+      "Kaspi_name_core": "Принт_5в1_черный",
+      "MY_SIZE": "2XL",
+      "OrderID": "1002495412",
+      "PROBABLE_SIZE": "3XL",
+      "Quantity": "1",
+      "SKU_key": "CL_OC_MEN_LINE52_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37137",
+      "_line_key": "1002495412|2026-07-18|CL_OC_MEN_LINE52_BLACK|Спортивный костюм ALPIKA Universal 5в1 alpika1 черный 54|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Спортивный костюм PRO COMBAT 528742263 черный 2XL",
+      "Kaspi_name_core": "Принт_5в1_черный",
+      "MY_SIZE": "3XL",
+      "OrderID": "1002507166",
+      "PROBABLE_SIZE": "2XL",
+      "Quantity": "1",
+      "SKU_key": "CL_OC_MEN_LINE52_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37138",
+      "_line_key": "1002507166|2026-07-18|CL_OC_MEN_LINE52_BLACK|Спортивный костюм PRO COMBAT 528742263 черный 2XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    },
+    {
+      "Date": "2026-07-18",
+      "ExpressDeliveryStatus": "PICKUP",
+      "HEIGHT": "",
+      "KASPI_OFFER_NAME": "Леггинсы PRO COMBAT 2010 черный 2XL",
+      "Kaspi_name_core": "Леггинсы_черные",
+      "MY_SIZE": "2XL",
+      "OrderID": "1002616958",
+      "PROBABLE_SIZE": "2XL",
+      "Quantity": "1",
+      "SKU_key": "CL_NEW-CLO_MEN_LEG_BLACK",
+      "STORE_NAME": "Universal",
+      "Status": "TODAY",
+      "WEIGHT": "",
+      "_db_row_id": "37140",
+      "_line_key": "1002616958|2026-07-18|CL_NEW-CLO_MEN_LEG_BLACK|Леггинсы PRO COMBAT 2010 черный 2XL|1",
+      "_probable_size_confidence": "HIGH",
+      "_probable_size_source": "DECLARED_ORDER"
+    }
+  ],
+  "schema_version": 1,
+  "source_artifacts": {
+    "api_active_order_ids_by_store": {
+      "path": "exports/google_ops_board/workflow_runs/2026-07-18/20260718_133509_2026-07-18_closeout/api_active_order_ids_by_store.json",
+      "sha256": "1e449d4067a485f7de7e7961328048d944d6f14849f9bda55eaa7d2666d7a5ef"
+    },
+    "expected_closeout_orders": {
+      "path": "exports/google_ops_board/workflow_runs/2026-07-18/20260718_133509_2026-07-18_closeout/expected_closeout_orders.json",
+      "sha256": "5c2959dcda16334eef7ba7e213becd280ce59cd7420818f4d5be5d7fd289693c"
+    },
+    "run_control_snapshot": {
+      "path": "exports/google_ops_board/workflow_runs/2026-07-18/20260718_133509_2026-07-18_closeout/run_control_snapshot.json",
+      "sha256": "220fae9bc230df91c90312c70cd8f3c46d6a95e3c44a8bceab5a899de8e587f2"
+    },
+    "salesraw_snapshot": {
+      "path": "exports/google_ops_board/workflow_runs/2026-07-18/20260718_133509_2026-07-18_closeout/salesraw_snapshot.json",
+      "sha256": "9ed38af9cdcceb8defe3b0312cfb5e4a717cb08cf0c957998596245cc2978e9f"
+    }
+  },
+  "source_run_id": "20260718_133509_2026-07-18_closeout",
+  "target_date": "2026-07-18"
+}

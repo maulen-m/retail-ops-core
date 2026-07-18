@@ -1,0 +1,1203 @@
+{
+  "known_divergences": [
+    {
+      "id": "KNOWN_DIVERGENCE_STORE_ALIAS_COLLISION",
+      "input_key": "Universal/UNIVERSAL/30000001_PP1",
+      "outputs": {
+        "expected_orders_normalizer": {
+          "UNIVERSAL": [
+            "G03"
+          ]
+        },
+        "obligation_normalizer": {
+          "UNIVERSAL": [
+            "G01",
+            "G02",
+            "G03"
+          ]
+        }
+      },
+      "sites": [
+        "validate_google_closeout_expected_orders.normalize_active_order_ids_by_store",
+        "waybill_shipping_obligations.reconcile_shipping_obligations"
+      ]
+    },
+    {
+      "id": "KNOWN_DIVERGENCE_ARCHIVE_AMBIGUITY",
+      "input_key": "archive_ambiguous",
+      "outputs": {
+        "obligation_classifier": {
+          "discharge_reason": "",
+          "issue_code": "obligation_api_stage_uncertain",
+          "last_stage": "UNKNOWN",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "stage_classifier": {
+          "api_stage": "ISSUED_COMPLETED",
+          "db_stage": "ISSUED_COMPLETED"
+        }
+      },
+      "sites": [
+        "kaspi_order_stage.classify_kaspi_order_stage",
+        "waybill_shipping_obligations.reconcile_shipping_obligations"
+      ]
+    },
+    {
+      "id": "KNOWN_DIVERGENCE_SAME_DAY_AFTER_CUTOFF",
+      "input_key": "today_after_cutoff_display_alias",
+      "outputs": {
+        "board": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "expected_orders_unfiltered": {
+          "overdue": false,
+          "planned_shipment_date": "2026-07-18",
+          "stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "store_code": "UNIVERSAL"
+        }
+      },
+      "sites": [
+        "sync_google_ops_board._select_operational_rows",
+        "validate_google_closeout_expected_orders.build_expected_orders_from_db"
+      ]
+    },
+    {
+      "id": "KNOWN_DIVERGENCE_OVERDUE_ACCEPTED_WITHOUT_WAYBILL",
+      "input_key": "overdue_accepted_no_waybill",
+      "outputs": {
+        "board": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": true,
+          "rendered_status": "OVERDUE",
+          "selected": true
+        },
+        "waybill_overdue_ids_by_store": {
+          "UNIVERSAL": [
+            "G02"
+          ]
+        }
+      },
+      "sites": [
+        "sync_google_ops_board._build_board_overdue_ids_by_store",
+        "waybill_overdue_carryforward.get_overdue_waybill_ready_order_ids_from_db"
+      ]
+    },
+    {
+      "id": "KNOWN_DIVERGENCE_ACTIVE_TERMINAL_TRUST",
+      "input_key": "archive_cancelled",
+      "outputs": {
+        "expected_orders_active_filtered": {
+          "overdue": true,
+          "planned_shipment_date": "2026-07-17",
+          "stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "store_code": "UNIVERSAL"
+        },
+        "obligations": {
+          "discharge_reason": "CANCELLED",
+          "issue_code": "",
+          "last_stage": "CANCELLED",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        }
+      },
+      "sites": [
+        "validate_google_closeout_expected_orders.build_expected_orders_from_db",
+        "waybill_shipping_obligations.reconcile_shipping_obligations"
+      ]
+    }
+  ],
+  "real_2026_07_18": {
+    "site_1_google_board": {
+      "mismatches": [],
+      "overdue_order_ids": [
+        "1000728584",
+        "1001332156",
+        "1001433623",
+        "1001468356",
+        "1001644253",
+        "1001659334",
+        "1001677523"
+      ],
+      "recorded_status_counts": {
+        "OVERDUE": 7,
+        "TODAY": 21
+      },
+      "replayed_status_counts": {
+        "OVERDUE": 7,
+        "TODAY": 21
+      },
+      "row_count": 28
+    },
+    "site_2_expected_orders": {
+      "projection_matches_recorded": true,
+      "recorded_projection": {
+        "counts": {
+          "order_lines": 21,
+          "orders": 21,
+          "overdue_orders": 0
+        },
+        "counts_by_stage": {
+          "ACCEPTED_PENDING_ASSEMBLY": 14,
+          "ASSEMBLED_PENDING_HANDOVER": 7
+        },
+        "counts_by_store": {
+          "STOREB": 2,
+          "ACMEWEAR": 10,
+          "UNIVERSAL": 9
+        },
+        "expected_order_ids": [
+          "1001940741",
+          "1001950222",
+          "1001991981",
+          "1002006269",
+          "1002063668",
+          "1002118921",
+          "1002192423",
+          "1002220546",
+          "1002224968",
+          "1002272005",
+          "1002342493",
+          "1002361438",
+          "1002381400",
+          "1002416572",
+          "1002440978",
+          "1002449476",
+          "1002495412",
+          "1002507166",
+          "1002565619",
+          "1002566784",
+          "1002616958"
+        ],
+        "line_scope_hash": "dc1605de04ee7ea88ff7f8062f5d87dd9920330cf188144dc32e62a206a67103",
+        "overdue_order_ids": []
+      },
+      "replayed": {
+        "active_order_blockers": {},
+        "counts": {
+          "excluded_rows": 7,
+          "order_lines": 21,
+          "orders": 21,
+          "overdue_orders": 0
+        },
+        "counts_by_stage": {
+          "ACCEPTED_PENDING_ASSEMBLY": 14,
+          "ASSEMBLED_PENDING_HANDOVER": 7
+        },
+        "counts_by_store": {
+          "STOREB": 2,
+          "ACMEWEAR": 10,
+          "UNIVERSAL": 9
+        },
+        "excluded_counts": {
+          "not_api_active": 7
+        },
+        "expected_order_ids": [
+          "1001940741",
+          "1001950222",
+          "1001991981",
+          "1002006269",
+          "1002063668",
+          "1002118921",
+          "1002192423",
+          "1002220546",
+          "1002224968",
+          "1002272005",
+          "1002342493",
+          "1002361438",
+          "1002381400",
+          "1002416572",
+          "1002440978",
+          "1002449476",
+          "1002495412",
+          "1002507166",
+          "1002565619",
+          "1002566784",
+          "1002616958"
+        ],
+        "line_scope_hash": "dc1605de04ee7ea88ff7f8062f5d87dd9920330cf188144dc32e62a206a67103",
+        "missing_active_order_ids_by_store": {},
+        "ok": true,
+        "orders": {
+          "1001940741": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1001950222": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1001991981": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "1002006269": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002063668": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "1002118921": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002192423": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "1002220546": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "STOREB"
+          },
+          "1002224968": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "1002272005": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002342493": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "STOREB"
+          },
+          "1002361438": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "1002381400": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002416572": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002440978": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002449476": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "1002495412": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "1002507166": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "1002565619": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002566784": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "ACMEWEAR"
+          },
+          "1002616958": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          }
+        },
+        "overdue_order_ids": []
+      }
+    },
+    "site_5_prewindow_parity": {
+      "issues": [],
+      "ok": true,
+      "previous_target_date": "2026-07-18",
+      "same_day_preserve": true,
+      "tabs": {
+        "Exceptions": {
+          "expected_row_count": 0,
+          "issues": [],
+          "live_row_count": 0,
+          "ok": true
+        },
+        "Run_Control": {
+          "expected_row_count": 1,
+          "issues": [],
+          "live_row_count": 1,
+          "ok": true
+        },
+        "SalesRaw_Today": {
+          "expected_row_count": 28,
+          "issues": [],
+          "live_row_count": 28,
+          "ok": true
+        }
+      },
+      "visibility_annotation_ok": true
+    },
+    "source_artifact_sha256": {
+      "api_active_order_ids_by_store": "1e449d4067a485f7de7e7961328048d944d6f14849f9bda55eaa7d2666d7a5ef",
+      "expected_closeout_orders": "5c2959dcda16334eef7ba7e213becd280ce59cd7420818f4d5be5d7fd289693c",
+      "run_control_snapshot": "220fae9bc230df91c90312c70cd8f3c46d6a95e3c44a8bceab5a899de8e587f2",
+      "salesraw_snapshot": "9ed38af9cdcceb8defe3b0312cfb5e4a717cb08cf0c957998596245cc2978e9f"
+    },
+    "source_run_id": "20260718_133509_2026-07-18_closeout"
+  },
+  "synthetic": {
+    "site_1_google_board": {
+      "board_overdue_ids_by_store": {
+        "UNIVERSAL": [
+          "G01",
+          "G02"
+        ]
+      },
+      "nonpackable_order_keys": [
+        "UNIVERSAL:G06",
+        "UNIVERSAL:G07",
+        "UNIVERSAL:G08",
+        "UNIVERSAL:G10",
+        "UNIVERSAL:G11",
+        "UNIVERSAL:G12",
+        "UNIVERSAL:G13",
+        "UNIVERSAL:G14",
+        "UNIVERSAL:G15"
+      ],
+      "orders": {
+        "archive_ambiguous": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "archive_cancelled": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "archive_cancelling_suspended": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "archive_completed": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "archive_return_requested_suspended": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "archive_returned": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "delivery_state": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "future_planned": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "internal_completed_without_api_detail": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "new_approved": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "overdue_accepted_no_waybill": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": true,
+          "rendered_status": "OVERDUE",
+          "selected": true
+        },
+        "overdue_assembled_waybill": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": true,
+          "rendered_status": "OVERDUE",
+          "selected": true
+        },
+        "physical_handover_courier_date": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "pickup_state": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "preorder_in_transit": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "returned_to_warehouse_flag": {
+          "nonpackable": true,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "signature_required_state": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "today_after_cutoff_display_alias": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        },
+        "today_before_cutoff_warehouse_alias": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": true
+        },
+        "today_exact_cutoff": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": true
+        },
+        "today_waybill_url_assembled": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": true
+        },
+        "unknown_state": {
+          "nonpackable": false,
+          "normalized_store": "UNIVERSAL",
+          "pending_carryforward": false,
+          "rendered_status": "TODAY",
+          "selected": false
+        }
+      },
+      "waybill_overdue_ids_by_store": {
+        "UNIVERSAL": [
+          "G02"
+        ]
+      }
+    },
+    "site_2_expected_orders": {
+      "active_filtered": {
+        "active_order_blockers": {
+          "UNIVERSAL:G05": [
+            "future_planned_date"
+          ],
+          "UNIVERSAL:G06": [
+            "already_handed_over"
+          ],
+          "UNIVERSAL:G15": [
+            "returned_to_warehouse"
+          ],
+          "UNIVERSAL:G16": [
+            "signature_required"
+          ]
+        },
+        "counts": {
+          "excluded_rows": 4,
+          "order_lines": 18,
+          "orders": 18,
+          "overdue_orders": 11
+        },
+        "counts_by_stage": {
+          "ACCEPTED_PENDING_ASSEMBLY": 16,
+          "ASSEMBLED_PENDING_HANDOVER": 2
+        },
+        "counts_by_store": {
+          "UNIVERSAL": 18
+        },
+        "excluded_counts": {
+          "already_handed_over": 1,
+          "future_planned_date": 1,
+          "returned_to_warehouse": 1,
+          "signature_required": 1
+        },
+        "expected_order_ids": [
+          "G01",
+          "G02",
+          "G03",
+          "G04",
+          "G07",
+          "G08",
+          "G09",
+          "G10",
+          "G11",
+          "G12",
+          "G13",
+          "G14",
+          "G17",
+          "G18",
+          "G19",
+          "G20",
+          "G21",
+          "G22"
+        ],
+        "line_scope_hash": "12357aebd5067c72832271779e5b427d069486de89d9264b9a5f2d78c804d041",
+        "missing_active_order_ids_by_store": {
+          "UNIVERSAL": [
+            "G05",
+            "G06",
+            "G15",
+            "G16"
+          ]
+        },
+        "ok": false,
+        "orders": {
+          "G01": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G02": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "G03": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G04": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G07": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G08": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G09": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G10": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G11": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G12": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G13": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G14": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G17": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G18": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G19": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G20": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G21": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "G22": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          }
+        },
+        "overdue_order_ids": [
+          "G01",
+          "G02",
+          "G07",
+          "G08",
+          "G09",
+          "G10",
+          "G11",
+          "G12",
+          "G13",
+          "G14",
+          "G20"
+        ]
+      },
+      "store_alias_normalization_collision": {
+        "UNIVERSAL": [
+          "G03"
+        ]
+      },
+      "unfiltered": {
+        "active_order_blockers": {},
+        "counts": {
+          "excluded_rows": 16,
+          "order_lines": 6,
+          "orders": 6,
+          "overdue_orders": 2
+        },
+        "counts_by_stage": {
+          "ACCEPTED_PENDING_ASSEMBLY": 4,
+          "ASSEMBLED_PENDING_HANDOVER": 2
+        },
+        "counts_by_store": {
+          "UNIVERSAL": 6
+        },
+        "excluded_counts": {
+          "already_handed_over": 1,
+          "future_planned_date": 1,
+          "returned_to_warehouse": 1,
+          "signature_required": 1,
+          "stage_CANCELLED": 1,
+          "stage_CANCELLING": 1,
+          "stage_IN_DELIVERY": 2,
+          "stage_ISSUED_COMPLETED": 3,
+          "stage_NEW_APPROVED": 1,
+          "stage_PREORDER_IN_TRANSIT": 1,
+          "stage_RETURNED": 1,
+          "stage_RETURN_REQUESTED": 1,
+          "stage_UNKNOWN": 1
+        },
+        "expected_order_ids": [
+          "G01",
+          "G02",
+          "G03",
+          "G04",
+          "G21",
+          "G22"
+        ],
+        "line_scope_hash": "c83523202a0ffaa81d8432e02f2e32d0a14f2fd0424eba92f2fe3e29f4da5f18",
+        "missing_active_order_ids_by_store": {},
+        "ok": true,
+        "orders": {
+          "G01": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G02": {
+            "overdue": true,
+            "planned_shipment_date": "2026-07-17",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "G03": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G04": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          },
+          "G21": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ASSEMBLED_PENDING_HANDOVER",
+            "store_code": "UNIVERSAL"
+          },
+          "G22": {
+            "overdue": false,
+            "planned_shipment_date": "2026-07-18",
+            "stage": "ACCEPTED_PENDING_ASSEMBLY",
+            "store_code": "UNIVERSAL"
+          }
+        },
+        "overdue_order_ids": [
+          "G01",
+          "G02"
+        ]
+      }
+    },
+    "site_3_shipping_obligations": {
+      "active_order_ids_by_store": {
+        "UNIVERSAL": [
+          "G01",
+          "G02",
+          "G03",
+          "G04",
+          "G05",
+          "G09",
+          "G16",
+          "G17",
+          "G18",
+          "G19",
+          "G20",
+          "G21",
+          "G22"
+        ]
+      },
+      "issues": [
+        {
+          "code": "obligation_api_stage_uncertain",
+          "detail": "ARCHIVE_UNDIFFERENTIATED",
+          "key": "UNIVERSAL:G09"
+        },
+        {
+          "code": "obligation_api_stage_uncertain",
+          "detail": "SIGN_REQUIRED",
+          "key": "UNIVERSAL:G16"
+        },
+        {
+          "code": "obligation_api_stage_uncertain",
+          "detail": "PREORDER_IN_TRANSIT",
+          "key": "UNIVERSAL:G17"
+        },
+        {
+          "code": "obligation_api_stage_uncertain",
+          "detail": "NEW_APPROVED",
+          "key": "UNIVERSAL:G18"
+        },
+        {
+          "code": "obligation_api_stage_uncertain",
+          "detail": "UNKNOWN",
+          "key": "UNIVERSAL:G19"
+        }
+      ],
+      "ok": false,
+      "orders": {
+        "archive_ambiguous": {
+          "discharge_reason": "",
+          "issue_code": "obligation_api_stage_uncertain",
+          "last_stage": "UNKNOWN",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "archive_cancelled": {
+          "discharge_reason": "CANCELLED",
+          "issue_code": "",
+          "last_stage": "CANCELLED",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        },
+        "archive_cancelling_suspended": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "CANCELLING",
+          "ledger_status": "suspended",
+          "suspension_reason": "CANCELLING"
+        },
+        "archive_completed": {
+          "discharge_reason": "ISSUED_COMPLETED",
+          "issue_code": "",
+          "last_stage": "ISSUED_COMPLETED",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        },
+        "archive_return_requested_suspended": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "RETURN_REQUESTED",
+          "ledger_status": "suspended",
+          "suspension_reason": "RETURN_REQUESTED"
+        },
+        "archive_returned": {
+          "discharge_reason": "RETURNED",
+          "issue_code": "",
+          "last_stage": "RETURNED",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        },
+        "delivery_state": {
+          "discharge_reason": "IN_DELIVERY",
+          "issue_code": "",
+          "last_stage": "IN_DELIVERY",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        },
+        "future_planned": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "internal_completed_without_api_detail": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "new_approved": {
+          "discharge_reason": "",
+          "issue_code": "obligation_api_stage_uncertain",
+          "last_stage": "NEW_APPROVED",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "overdue_accepted_no_waybill": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "overdue_assembled_waybill": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ASSEMBLED_PENDING_HANDOVER",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "physical_handover_courier_date": {
+          "discharge_reason": "IN_DELIVERY",
+          "issue_code": "",
+          "last_stage": "IN_DELIVERY",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        },
+        "pickup_state": {
+          "discharge_reason": "IN_DELIVERY",
+          "issue_code": "",
+          "last_stage": "IN_DELIVERY",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        },
+        "preorder_in_transit": {
+          "discharge_reason": "",
+          "issue_code": "obligation_api_stage_uncertain",
+          "last_stage": "PREORDER_IN_TRANSIT",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "returned_to_warehouse_flag": {
+          "discharge_reason": "RETURNED",
+          "issue_code": "",
+          "last_stage": "RETURNED",
+          "ledger_status": "discharged",
+          "suspension_reason": ""
+        },
+        "signature_required_state": {
+          "discharge_reason": "",
+          "issue_code": "obligation_api_stage_uncertain",
+          "last_stage": "SIGN_REQUIRED",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "today_after_cutoff_display_alias": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "today_before_cutoff_warehouse_alias": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "today_exact_cutoff": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ACCEPTED_PENDING_ASSEMBLY",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "today_waybill_url_assembled": {
+          "discharge_reason": "",
+          "issue_code": "",
+          "last_stage": "ASSEMBLED_PENDING_HANDOVER",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        },
+        "unknown_state": {
+          "discharge_reason": "",
+          "issue_code": "obligation_api_stage_uncertain",
+          "last_stage": "UNKNOWN",
+          "ledger_status": "unresolved",
+          "suspension_reason": ""
+        }
+      },
+      "store_alias_active_union": {
+        "UNIVERSAL": [
+          "G01",
+          "G02",
+          "G03"
+        ]
+      }
+    },
+    "site_4_waybill_overdue": {
+      "UNIVERSAL": [
+        "G02"
+      ]
+    },
+    "site_5_prewindow_parity": {
+      "issues": [],
+      "ok": true,
+      "previous_target_date": "2026-07-18",
+      "same_day_preserve": true,
+      "tabs": {
+        "Exceptions": {
+          "expected_row_count": 0,
+          "issues": [],
+          "live_row_count": 0,
+          "ok": true
+        },
+        "Run_Control": {
+          "expected_row_count": 1,
+          "issues": [],
+          "live_row_count": 1,
+          "ok": true
+        },
+        "SalesRaw_Today": {
+          "expected_row_count": 8,
+          "issues": [],
+          "live_row_count": 8,
+          "ok": true
+        }
+      },
+      "visibility_annotation_ok": true
+    },
+    "site_6_stage_classifier": {
+      "archive_ambiguous": {
+        "api_stage": "ISSUED_COMPLETED",
+        "db_stage": "ISSUED_COMPLETED"
+      },
+      "archive_cancelled": {
+        "api_stage": "CANCELLED",
+        "db_stage": "CANCELLED"
+      },
+      "archive_cancelling_suspended": {
+        "api_stage": "CANCELLING",
+        "db_stage": "CANCELLING"
+      },
+      "archive_completed": {
+        "api_stage": "ISSUED_COMPLETED",
+        "db_stage": "ISSUED_COMPLETED"
+      },
+      "archive_return_requested_suspended": {
+        "api_stage": "RETURN_REQUESTED",
+        "db_stage": "RETURN_REQUESTED"
+      },
+      "archive_returned": {
+        "api_stage": "RETURNED",
+        "db_stage": "RETURNED"
+      },
+      "delivery_state": {
+        "api_stage": "IN_DELIVERY",
+        "db_stage": "IN_DELIVERY"
+      },
+      "future_planned": {
+        "api_stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "db_stage": "ACCEPTED_PENDING_ASSEMBLY"
+      },
+      "internal_completed_without_api_detail": {
+        "api_stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "db_stage": "ISSUED_COMPLETED"
+      },
+      "new_approved": {
+        "api_stage": "NEW_APPROVED",
+        "db_stage": "NEW_APPROVED"
+      },
+      "overdue_accepted_no_waybill": {
+        "api_stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "db_stage": "ACCEPTED_PENDING_ASSEMBLY"
+      },
+      "overdue_assembled_waybill": {
+        "api_stage": "ASSEMBLED_PENDING_HANDOVER",
+        "db_stage": "ASSEMBLED_PENDING_HANDOVER"
+      },
+      "physical_handover_courier_date": {
+        "api_stage": "IN_DELIVERY",
+        "db_stage": "IN_DELIVERY"
+      },
+      "pickup_state": {
+        "api_stage": "IN_DELIVERY",
+        "db_stage": "IN_DELIVERY"
+      },
+      "preorder_in_transit": {
+        "api_stage": "PREORDER_IN_TRANSIT",
+        "db_stage": "PREORDER_IN_TRANSIT"
+      },
+      "returned_to_warehouse_flag": {
+        "api_stage": "RETURNED",
+        "db_stage": "RETURNED"
+      },
+      "signature_required_state": {
+        "api_stage": "SIGN_REQUIRED",
+        "db_stage": "SIGN_REQUIRED"
+      },
+      "today_after_cutoff_display_alias": {
+        "api_stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "db_stage": "ACCEPTED_PENDING_ASSEMBLY"
+      },
+      "today_before_cutoff_warehouse_alias": {
+        "api_stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "db_stage": "ACCEPTED_PENDING_ASSEMBLY"
+      },
+      "today_exact_cutoff": {
+        "api_stage": "ACCEPTED_PENDING_ASSEMBLY",
+        "db_stage": "ACCEPTED_PENDING_ASSEMBLY"
+      },
+      "today_waybill_url_assembled": {
+        "api_stage": "ASSEMBLED_PENDING_HANDOVER",
+        "db_stage": "ASSEMBLED_PENDING_HANDOVER"
+      },
+      "unknown_state": {
+        "api_stage": "UNKNOWN",
+        "db_stage": "UNKNOWN"
+      }
+    },
+    "site_7_daily_waybills": {
+      "api_date_fallbacks": {
+        "explicit_planned_wins": "2026-07-19",
+        "fallback_after_cutoff": "2026-07-19",
+        "fallback_before_cutoff": "2026-07-18",
+        "fallback_exact_cutoff": "2026-07-18",
+        "missing_dates": null
+      },
+      "overdue_groups": [
+        "mixed_group_min_date_wins",
+        "overdue_only"
+      ],
+      "today_groups": [
+        "future_is_rendered_today",
+        "missing_date_is_rendered_today",
+        "today_only"
+      ]
+    }
+  }
+}
