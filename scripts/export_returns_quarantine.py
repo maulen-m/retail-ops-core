@@ -508,7 +508,7 @@ def build_return_cancel_exports(
 
 
 def _needs_qc(row: dict[str, Any]) -> bool:
-    return row["quarantine_effect"].startswith("+") or bool(row["exception_reason"])
+    return row["returned_to_warehouse"] == "1"
 
 
 def _qc_row(row: dict[str, Any]) -> dict[str, str]:

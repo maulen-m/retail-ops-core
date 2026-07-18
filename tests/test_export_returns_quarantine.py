@@ -199,7 +199,7 @@ def test_cancelled_before_stock_moved_has_no_quarantine_queue(tmp_path: Path) ->
     assert result.qc_rows == []
 
 
-def test_cancelling_order_is_expected_return_pending_qc(tmp_path: Path) -> None:
+def test_cancelling_order_is_expected_return_but_not_employee_qc(tmp_path: Path) -> None:
     conn = _init_db(tmp_path / "app.db")
     _insert_order(
         conn,
@@ -220,8 +220,7 @@ def test_cancelling_order_is_expected_return_pending_qc(tmp_path: Path) -> None:
     assert result.backlog_rows[0]["stage_code"] == "CANCELLING"
     assert result.backlog_rows[0]["event_type"] == "EXPECTED_RETURN"
     assert result.backlog_rows[0]["quarantine_effect"] == "+1"
-    assert result.qc_rows[0]["physical_bucket"] == "EXPECTED_RETURN"
-    assert result.qc_rows[0]["qc_status"] == "PENDING_QC"
+    assert result.qc_rows == []
 
 
 def test_missing_line_identity_is_exception_and_never_restocked(tmp_path: Path) -> None:

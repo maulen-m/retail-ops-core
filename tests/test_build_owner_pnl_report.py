@@ -137,6 +137,9 @@ def _write_mapped_csv(path: Path, *, tx_date: str) -> None:
                 "status_internal": "DELIVERED",
                 "return_flag": "0",
                 "transaction_date_source": "status_change_date",
+                "mapped_sku_key": "SKU_A",
+                "mapped_sku_id": "SKU_A_M",
+                "mapped_size": "M",
             }
         ]
     ).to_csv(path, index=False, encoding="utf-8")

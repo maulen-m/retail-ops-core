@@ -46,6 +46,16 @@ Separate Kaspi public offers/articles in the same order must remain separate row
 even when they map to the same internal SKU family.  
 **Purpose:** Transaction-level economics for inventory math
 
+The stable logical key is `(Store, OrderID, normalized Kaspi article)`. For raw
+API evidence, immutable `entry_id` is stronger and preserves distinct real
+entries even when their article is the same. Workbook path/row, dates, listing
+title, SKU/size, quantity, and price are mutable evidence and must not create a
+new line. A later workbook snapshot for the same stable key supersedes the
+earlier snapshot; genuine multi-line orders remain distinct by article or API
+entry ID. Until a DB table persists this stable key, any re-ingest that finds a
+changed SKU/size at an existing display-offer grain must fail closed rather than
+insert another sale or stock event.
+
 | Col | Header | Type | Notes |
 |---:|---|---|---|
 | A | Date | Data | `sale_date` / `transaction_date`: WebUI status-change date for delivered/completed rows after the strict cutover; never order intake for stock, COGS, cash, or PnL |
@@ -118,6 +128,62 @@ Child-bundle COGS boundary:
 - Parent aggregate economics, such as a full LINE61 parent cost/weight, are not enough to split a child bundle into top, shorts, and leggings by inference.
 - Exact owner-approved production exceptions may resolve only the named sales rows through `fact_sales_owner_cogs_override`; this is row-level authority, not SKU-wide child-bundle economics.
 - Missing component-level economics remain unresolved/YELLOW until a later owner-approved source route or production DB contract is reviewed.
+
+### 4.2 Stable public-offer line identity
+
+For Kaspi order and sales projections, the immutable business line grain is
+entry-first and article-fallback:
+
+- `ENTRY:<immutable API entry_id>` when an API entry exists;
+- otherwise `ARTICLE:<normalized public Kaspi article>` within
+  `order_id + normalized store_code`.
+
+`sku_id`, `my_size`, display offer name, workbook row number, workbook path, and
+snapshot date are attributes of that line. They must not participate in the
+stable identity because employee size corrections and lifecycle snapshots can
+change them without creating a second purchased product line.
+
+Required persistence and write behavior:
+
+- `fact_orders_kaspi`, `sales_fact_v2`, and the legacy `fact_sales` mirror carry
+  `source_entry_id`, `kaspi_article`, and `line_identity_key`.
+- A nonblank `source_entry_id` is globally unique within each projection. When
+  it is absent, a partial unique article-grain index applies to
+  `order_id + store_code + kaspi_article`. Legacy rows without either fact
+  remain grandfathered, but a blank value is never evidence that two rows are
+  distinct.
+- New or repaired source-proven sales writes must populate the available entry,
+  article, and derived line-key columns. A
+  repeated entry with a changed size is a correction conflict and fails closed;
+  it must not insert a second sales line. Article fallback follows the same rule
+  only when no entry ID exists.
+- Two rows with the same display offer name or article are separate lines only
+  when distinct immutable entry IDs prove them; without entry IDs, distinct
+  articles are required.
+- New `stock_ledger` events carry `source_store_code`, source entry/article/key,
+  and repair lineage. Existing immutable ledger events are associated with a
+  source-proven line through the append-only `stock_ledger_source_identity`
+  link table; source metadata must not be backfilled by rewriting the original
+  event. A wrong historical SALE is corrected through an exact compensating
+  event plus the source-proven replacement event; append-only stock history is
+  not silently deleted.
+- Historical article backfill, sales supersession, and stock compensation are
+  separate reviewed repair operations. A schema migration alone does not infer
+  missing articles or authorize production mutation.
+
+Schema migration source:
+
+- `scripts/migrate_031_sales_public_article_line_grain.py`
+
+Publication-binding work has a deliberately narrower copied-DB prerequisite
+than migration 031. `core/sales/publication_prerequisites.py` defines exactly
+seven nullable `TEXT` columns across `fact_orders_kaspi`, `sales_fact_v2`, and
+`fact_sales`, plus the three canonical partial unique `source_entry_id`
+indexes. `scripts/apply_minimal_sales_publication_bootstrap.py` may install
+only that 7-column/3-index contract on an explicitly gated run-directory copy.
+It performs no row normalization or backfill and does not complete migration
+031. Publication manifests must fail closed until this minimal contract is
+already present and exact; they must never install it implicitly.
 
 ---
 
@@ -261,6 +327,12 @@ read-only Agent 7 integration gate:
 - sales rows must bind to `order_status_event` completed lifecycle evidence and
   canonical `fact_order_entries_kaspi` rows; duplicate delivered projections for
   the same order/SKU grain block publication.
+- Terminal lifecycle evidence is monotonic for published sales eligibility. An
+  exact order/store with any `order_status_event.stage_code` of `CANCELLED` or
+  `RETURNED` must be excluded from `view_sales_line_truth`, even if a later stale
+  CRM projection writes `fact_orders_kaspi.internal_status='NEW'` or a staging
+  sales table still says delivered. A mutable header projection cannot override
+  the append-only terminal lifecycle spine.
 - returned or cancelled units must stay out of active sellable stock until
   `return_qc_event.accepted_active_qty` covers the positive restock quantity.
 - PO inbound must be keyed to `po_part` or `po_line` grain, and received inbound
