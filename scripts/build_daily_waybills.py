@@ -71,6 +71,7 @@ from core.ops.crm_operational_view import (
     select_operational_crm_rows,
     select_operational_crm_rows_with_targeted_fallback,
 )
+from core.ops.expected_shipping_status import ExpectedShippingFacts, waybill_split
 from core.ops.waybill_send_batch import (
     AUTONOMOUS_MANIFEST_SCHEMA_VERSION,
     SEND_LEDGER_FILE,
@@ -1646,10 +1647,20 @@ def count_packages(groups: list[WaybillGroup]) -> int:
 
 def is_overdue_group(group: WaybillGroup, target_date: date) -> bool:
     """Return True if any planned date is before target_date."""
-    planned_dates = [item.planned_date for item in group.items if item.planned_date]
-    if not planned_dates:
+    if not group.items:
         return False
-    return min(planned_dates) < target_date
+    lines = [
+        {
+            "store_code": group.store_name or "UNKNOWN",
+            "order_id": "WAYBILL_GROUP",
+            "planned_date": item.planned_date,
+        }
+        for item in group.items
+    ]
+    decision = waybill_split.evaluate(
+        ExpectedShippingFacts.from_lines(lines, target_date=target_date)
+    )
+    return decision.projection == "OVERDUE"
 
 
 def split_groups_by_overdue(
