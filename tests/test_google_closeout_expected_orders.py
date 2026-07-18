@@ -10,6 +10,7 @@ from core.ops.waybill_shipping_obligations import (
     load_required_orders_file,
     required_line_scope_hash,
 )
+from scripts import validate_google_closeout_expected_orders as expected_mod
 from scripts.validate_google_closeout_expected_orders import (
     build_expected_orders_from_db,
     validate_manifest_against_expected,
@@ -110,6 +111,44 @@ def test_build_expected_orders_from_db_includes_sized_today_and_overdue_pending_
     assert report["counts"]["orders"] == 2
     assert report["counts"]["overdue_orders"] == 1
     assert report["counts_by_store"] == {"ACMEWEAR": 1, "UNIVERSAL": 1}
+
+
+def test_expected_order_shadow_divergence_writes_report_and_warns(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _make_expected_orders_db(db_path)
+    shadow_root = tmp_path / "expected_status_shadow"
+    alerts: list[dict] = []
+    monkeypatch.setenv("AB_EXPECTED_STATUS_SHADOW", "1")
+    monkeypatch.setattr(expected_mod, "EXPECTED_STATUS_SHADOW_ROOT", shadow_root)
+    monkeypatch.setattr(
+        expected_mod,
+        "_legacy_expected_order_projection",
+        lambda *_args, **_kwargs: {"forced": "legacy-divergence"},
+    )
+    monkeypatch.setattr(
+        expected_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or True,
+    )
+
+    report = build_expected_orders_from_db(
+        db_path=db_path,
+        target_date=date(2026, 4, 20),
+        lookback_days=5,
+    )
+
+    assert report["expected_order_ids"] == ["OVERDUE101", "TODAY100"]
+    shadow_files = list(shadow_root.glob("*.json"))
+    assert len(shadow_files) == 1
+    shadow_report = json.loads(shadow_files[0].read_text(encoding="utf-8"))
+    assert shadow_report["site"] == "expected_orders"
+    assert shadow_report["shadow_window_days"] == 7
+    assert shadow_report["divergence_count"] > 0
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "WARN"
 
 
 def test_build_expected_orders_from_db_has_unbounded_obligation_mode(tmp_path: Path) -> None:

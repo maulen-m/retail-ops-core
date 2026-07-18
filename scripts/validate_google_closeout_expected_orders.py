@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 from collections import Counter
@@ -17,10 +18,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.integrations.google_ops_board import dump_json  # noqa: E402
+from core.alerts.ops_alert_outbox import enqueue_alert  # noqa: E402
 from core.integrations.kaspi_order_stage import (  # noqa: E402
     StageCode,
     classify_kaspi_order_stage,
     classify_kaspi_stage_from_db_row,
+)
+from core.ops.expected_shipping_status import (  # noqa: E402
+    ExpectedShippingFacts,
+    expected_orders,
 )
 from core.paths import data_path  # noqa: E402
 from core.ops.waybill_shipping_obligations import required_line_scope_hash  # noqa: E402
@@ -36,6 +42,9 @@ READY_TO_CLOSEOUT_STAGES = {
 }
 DEFAULT_EXPECTED_FILENAME = "expected_closeout_orders.json"
 DEFAULT_GATE_FILENAME = "expected_order_manifest_gate.json"
+EXPECTED_STATUS_SHADOW_ROOT = PROJECT_ROOT / "exports" / "expected_status_shadow"
+EXPECTED_STATUS_SHADOW_ENV = "AB_EXPECTED_STATUS_SHADOW"
+EXPECTED_STATUS_SHADOW_WINDOW_DAYS = 7
 
 
 def _clean(value: Any) -> str:
@@ -83,15 +92,128 @@ def normalize_active_order_ids_by_store(
 ) -> dict[str, set[str]] | None:
     if active_order_ids_by_store is None:
         return None
-    normalized: dict[str, set[str]] = {}
-    for store_code, order_ids in active_order_ids_by_store.items():
-        normalized_store = _normalize_store_code(store_code)
-        normalized[normalized_store] = {
-            order_id
-            for order_id in (_clean(value) for value in order_ids)
-            if order_id
+    return expected_orders.normalize_active_order_ids_by_store(
+        active_order_ids_by_store
+    )
+
+
+def _expected_status_shadow_enabled() -> bool:
+    return str(os.environ.get(EXPECTED_STATUS_SHADOW_ENV) or "").strip() == "1"
+
+
+def _legacy_expected_order_projection(
+    rows: list[dict[str, Any]],
+    *,
+    target_date: date,
+    active_selector_member: bool | None,
+) -> dict[str, Any] | None:
+    """Preserved pre-migration scope computation for the seven-day shadow only."""
+
+    planned_dates = [
+        parsed
+        for parsed in (
+            parse_kaspi_date(row.get("planned_shipment_date")) for row in rows
+        )
+        if parsed is not None
+    ]
+    reasons: list[str] = []
+    if not planned_dates:
+        reasons.append("invalid_planned_date")
+    elif all(planned > target_date for planned in planned_dates):
+        reasons.append("future_planned_date")
+    if any(_is_truthy(row.get("signature_required")) for row in rows):
+        reasons.append("signature_required")
+    if any(_is_truthy(row.get("returned_to_warehouse")) for row in rows):
+        reasons.append("returned_to_warehouse")
+    if any(
+        _has_text(row.get("courier_transmission_date"))
+        or _has_text(row.get("actual_shipment_date"))
+        for row in rows
+    ):
+        reasons.append("already_handed_over")
+    stages = [classify_kaspi_stage_from_db_row(row) for row in rows]
+    ready_stages = [stage for stage in stages if stage in READY_TO_CLOSEOUT_STAGES]
+    if active_selector_member is None and not ready_stages:
+        reasons.append(
+            "stage_" + (stages[0].value if stages else StageCode.UNKNOWN.value)
+        )
+    if active_selector_member is False:
+        reasons.append("not_api_active")
+    if reasons:
+        return None
+    planned_date = min(planned for planned in planned_dates if planned <= target_date)
+    stage = ready_stages[0] if ready_stages else StageCode.ACCEPTED_PENDING_ASSEMBLY
+    return {
+        "store_code": _normalize_store_code(rows[0].get("store_code")),
+        "planned_shipment_date": planned_date.isoformat(),
+        "stage": stage.value,
+        "overdue": planned_date < target_date,
+    }
+
+
+def _expected_order_policy_decision(
+    rows: list[dict[str, Any]],
+    *,
+    store_code: str,
+    order_id: str,
+    target_date: date,
+    active_selector_member: bool | None,
+):
+    policy_lines = [
+        {
+            **row,
+            "store_code": store_code or "UNKNOWN",
+            "order_id": order_id,
         }
-    return normalized
+        for row in rows
+    ]
+    facts = ExpectedShippingFacts.from_lines(
+        policy_lines,
+        target_date=target_date,
+        active_selector_member=active_selector_member,
+    )
+    return expected_orders.evaluate(facts)
+
+
+def _emit_expected_status_shadow_divergence(
+    *,
+    target_date: date,
+    divergences: list[dict[str, Any]],
+) -> Path:
+    generated_at = datetime.now().astimezone()
+    report = {
+        "schema_version": 1,
+        "site": "expected_orders",
+        "policy": expected_orders.name,
+        "shadow_window_days": EXPECTED_STATUS_SHADOW_WINDOW_DAYS,
+        "generated_at": generated_at.isoformat(),
+        "target_date": target_date.isoformat(),
+        "divergence_count": len(divergences),
+        "divergences": divergences,
+    }
+    output_path = EXPECTED_STATUS_SHADOW_ROOT / (
+        f"{target_date.isoformat()}_expected_orders_"
+        f"{generated_at.strftime('%Y%m%dT%H%M%S%f%z')}.json"
+    )
+    dump_json(output_path, report)
+    digest = hashlib.sha256(
+        json.dumps(divergences, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    enqueue_alert(
+        title="Expected shipping status shadow divergence",
+        lines=[
+            "Site: expected_orders",
+            f"Target date: {target_date.isoformat()}",
+            f"Divergences: {len(divergences)}",
+            f"Report: {output_path}",
+        ],
+        severity="WARN",
+        dedup_key=(
+            "expected_shipping_status_shadow:expected_orders:"
+            f"{target_date.isoformat()}:{digest}"
+        ),
+    )
+    return output_path
 
 
 def fetch_api_active_order_ids_by_store(
@@ -347,6 +469,8 @@ def build_expected_orders_from_db(
     excluded: Counter[str] = Counter()
     excluded_by_pair: dict[tuple[str, str], list[str]] = {}
     grouped_rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    shadow_enabled = _expected_status_shadow_enabled()
+    shadow_divergences: list[dict[str, Any]] = []
 
     candidate_rows = _load_candidate_rows(Path(db_path))
     core_conn = sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True)
@@ -377,6 +501,35 @@ def build_expected_orders_from_db(
         grouped_rows.setdefault((store_code, order_id), []).append(row)
 
     for (store_code, order_id), rows in sorted(grouped_rows.items()):
+        active_selector_member = (
+            None
+            if active_lookup is None
+            else order_id in active_lookup.get(store_code, set())
+        )
+        policy_decision = _expected_order_policy_decision(
+            rows,
+            store_code=store_code,
+            order_id=order_id,
+            target_date=target_date,
+            active_selector_member=active_selector_member,
+        )
+        if shadow_enabled:
+            legacy_projection = _legacy_expected_order_projection(
+                rows,
+                target_date=target_date,
+                active_selector_member=active_selector_member,
+            )
+            if legacy_projection != policy_decision.projection:
+                shadow_divergences.append(
+                    {
+                        "store_code": store_code,
+                        "order_id": order_id,
+                        "legacy_inline": legacy_projection,
+                        "policy_output": policy_decision.projection,
+                        "policy_reason_codes": list(policy_decision.reason_codes),
+                    }
+                )
+        policy_reason_codes = list(policy_decision.reason_codes)
         reasons: list[str] = []
         planned_dates = [
             parsed
@@ -396,17 +549,15 @@ def build_expected_orders_from_db(
             else:
                 reasons.append("outside_lookback")
 
-        terminal_reasons: list[str] = []
-        if any(_is_truthy(row.get("signature_required")) for row in rows):
-            terminal_reasons.append("signature_required")
-        if any(_is_truthy(row.get("returned_to_warehouse")) for row in rows):
-            terminal_reasons.append("returned_to_warehouse")
-        if any(
-            _has_text(row.get("courier_transmission_date"))
-            or _has_text(row.get("actual_shipment_date"))
-            for row in rows
-        ):
-            terminal_reasons.append("already_handed_over")
+        terminal_reasons = [
+            reason
+            for reason in (
+                "signature_required",
+                "returned_to_warehouse",
+                "already_handed_over",
+            )
+            if reason in policy_reason_codes
+        ]
         if terminal_reasons:
             unique_reasons = list(dict.fromkeys(terminal_reasons))
             excluded_by_pair[(store_code, order_id)] = unique_reasons
@@ -492,10 +643,12 @@ def build_expected_orders_from_db(
         if unsafe_product_attribution:
             reasons.append("unsafe_product_attribution")
 
-        stages = [classify_kaspi_stage_from_db_row(row) for row in rows]
-        ready_stages = [stage for stage in stages if stage in READY_TO_CLOSEOUT_STAGES]
-        if active_lookup is None and not ready_stages:
-            reasons.append("stage_" + (stages[0].value if stages else StageCode.UNKNOWN.value))
+        if active_lookup is None:
+            reasons.extend(
+                reason
+                for reason in policy_reason_codes
+                if reason.startswith("stage_")
+            )
 
         if reasons:
             unique_reasons = list(dict.fromkeys(reasons))
@@ -504,7 +657,7 @@ def build_expected_orders_from_db(
                 excluded[reason] += 1
             continue
 
-        if active_lookup is not None and order_id not in active_lookup.get(store_code, set()):
+        if active_lookup is not None and "not_api_active" in policy_reason_codes:
             excluded["not_api_active"] += 1
             continue
 
@@ -527,7 +680,7 @@ def build_expected_orders_from_db(
         my_size = my_sizes[0] if my_sizes else ""
         final_sizes = sorted({line["final_size"] for line in line_records})
         final_size = final_sizes[0] if len(final_sizes) == 1 else "MULTI"
-        stage = ready_stages[0] if ready_stages else StageCode.ACCEPTED_PENDING_ASSEMBLY
+        stage = policy_decision.stage
         line_records.sort(key=lambda item: item["db_row_id"])
         expected_rows.append(
             {
@@ -585,7 +738,7 @@ def build_expected_orders_from_db(
             ["missing_db_row"],
         )
 
-    return {
+    report = {
         "schema_version": 3,
         "ok": not missing_active_pairs,
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -617,6 +770,12 @@ def build_expected_orders_from_db(
         "active_order_blockers": dict(sorted(active_order_blockers.items())),
         "article_identity_blockers": dict(sorted(article_identity_blockers.items())),
     }
+    if shadow_divergences:
+        _emit_expected_status_shadow_divergence(
+            target_date=target_date,
+            divergences=shadow_divergences,
+        )
+    return report
 
 
 def validate_required_orders_against_db(
