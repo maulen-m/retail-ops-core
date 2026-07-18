@@ -370,7 +370,8 @@
         "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
         "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1",
         "KASPI_PLANNED_CUTOFF_HOUR": "17",
-        "KASPI_PLANNED_CUTOFF_MINUTE": "0"
+        "KASPI_PLANNED_CUTOFF_MINUTE": "0",
+        "AB_EXPECTED_STATUS_SHADOW": "1"
       },
       "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_watch_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_closeout_watch_stderr.log"
@@ -422,7 +423,8 @@
         "ENABLE_GOOGLE_OPS_BOARD_CLOSEOUT": "1",
         "ENABLE_KASPI_WORKBOOK_MAP_SYNC": "1",
         "KASPI_PLANNED_CUTOFF_HOUR": "17",
-        "KASPI_PLANNED_CUTOFF_MINUTE": "0"
+        "KASPI_PLANNED_CUTOFF_MINUTE": "0",
+        "AB_EXPECTED_STATUS_SHADOW": "1"
       },
       "stdout": "${PROJECT_ROOT}/runtime_logs/kaspi_waybill_deadline_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/kaspi_waybill_deadline_stderr.log"
