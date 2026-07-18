@@ -29,7 +29,6 @@ from core.stores.roster import load_sync_enabled_kaspi_store_codes  # noqa: E402
 from core.utils.sku_normalize import normalize_size  # noqa: E402
 from scripts.google_ops_board_automation_common import (  # noqa: E402
     DEFAULT_READY_DEBOUNCE_STATE_PATH,
-    READY_DEBOUNCE_SECONDS,
     auto_probable_closeout_cutoff_reached,
     auto_probable_closeout_time_label,
     clear_ready_debounce_state,
@@ -39,6 +38,7 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     evaluate_closeout_halt_barrier,
     load_ready_debounce_state,
     now_almaty,
+    resolved_ready_debounce_seconds,
     run_guarded,
     save_json_file,
     save_ready_debounce_state,
@@ -922,20 +922,21 @@ def main() -> int:
         )
         return int(result.returncode)
 
+    ready_debounce_seconds = resolved_ready_debounce_seconds()
     debounce = evaluate_ready_debounce(
         state=load_ready_debounce_state(READY_DEBOUNCE_STATE_PATH),
         target_date=target_date,
         now=local_now,
         ready=True,
         ready_set_at=_clean(readiness.get("ready_set_at")),
-        debounce_seconds=READY_DEBOUNCE_SECONDS,
+        debounce_seconds=ready_debounce_seconds,
     )
     action = str(debounce["action"])
     if action == "arm":
         save_ready_debounce_state(debounce["state"], READY_DEBOUNCE_STATE_PATH)
         print(
             "Google Ops Board early-closeout watch: READY detected; "
-            f"arming {READY_DEBOUNCE_SECONDS}s debounce."
+            f"arming {ready_debounce_seconds}s debounce."
         )
         return 0
     if action == "wait":

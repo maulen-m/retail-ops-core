@@ -5,6 +5,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -107,6 +108,18 @@ OBLIGATION_DETAIL_MAX_EXACT_READS = 60
 OBLIGATION_DETAIL_MAX_PAGES_PER_STATE = 10
 OBLIGATION_DETAIL_MAX_SECONDS = 120.0
 OBLIGATION_DETAIL_BULK_THRESHOLD = 5
+OBLIGATION_DETAIL_MAX_OPEN_ENV = "OBLIGATION_DETAIL_MAX_OPEN"
+OBLIGATION_DETAIL_MAX_PAGES_PER_STATE_ENV = (
+    "OBLIGATION_DETAIL_MAX_PAGES_PER_STATE"
+)
+OBLIGATION_DETAIL_BULK_THRESHOLD_ENV = (
+    "OBLIGATION_DETAIL_BULK_THRESHOLD"
+)
+OBLIGATION_DETAIL_MAX_EXACT_READS_ENV = "OBLIGATION_DETAIL_MAX_EXACT_READS"
+OBLIGATION_DETAIL_MAX_SECONDS_ENV = "OBLIGATION_DETAIL_MAX_SECONDS"
+OBLIGATION_BUDGET_WARNING_FRACTION = 0.8
+OBLIGATION_BUDGET_ALERT_DEDUP_WINDOW = timedelta(days=370)
+_INVALID_ENV_WARNINGS_EMITTED: set[tuple[str, str]] = set()
 STAGE_ORDER = [
     "size_writeback",
     "shipping",
@@ -124,6 +137,16 @@ STAGE_TIMEOUT_SECONDS = {
     "shipped_truth_sync": 600,
     "telegram_delivery": 1200,
 }
+ENV_TUNABLE_STAGE_TIMEOUTS = frozenset(
+    {
+        "size_writeback",
+        "shipping",
+        "download_waybills",
+        "build_waybills",
+        "delivery_send",
+        "shipped_truth_sync",
+    }
+)
 STORE_NAME_TO_API_CODE = {
     "AcmeWear": "ACMEWEAR",
     "Universal": "UNIVERSAL",
@@ -572,7 +595,7 @@ def _run_command(
 ) -> dict[str, Any]:
     started_dt = datetime.now(ALMATY_TZ)
     started_at = started_dt.isoformat()
-    timeout_seconds = int(STAGE_TIMEOUT_SECONDS.get(name, 10 * 60))
+    timeout_seconds = _resolved_stage_timeout_seconds(name)
     timed_out = False
     try:
         proc = subprocess.run(
@@ -1178,14 +1201,12 @@ def _fetch_prior_obligation_details(
     stats_out: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     started = time.monotonic()
-    max_exact_reads = _positive_int_env(
-        "OBLIGATION_DETAIL_MAX_EXACT_READS",
-        OBLIGATION_DETAIL_MAX_EXACT_READS,
-    )
-    max_seconds = _positive_float_env(
-        "OBLIGATION_DETAIL_MAX_SECONDS",
-        OBLIGATION_DETAIL_MAX_SECONDS,
-    )
+    limits = _resolved_obligation_detail_limits()
+    max_open = int(limits["max_open"])
+    max_exact_reads = int(limits["max_exact_reads"])
+    max_pages_per_state = int(limits["max_pages_per_state"])
+    max_seconds = float(limits["max_seconds"])
+    bulk_threshold = int(limits["bulk_threshold"])
     results: dict[str, dict[str, Any]] = {}
     entries = dict(ledger.get("entries") or {})
     clients: dict[str, KaspiAPIClient] = {}
@@ -1196,25 +1217,37 @@ def _fetch_prior_obligation_details(
         "exact_read_count": 0,
         "resolved_count": 0,
         "budget_exhausted": False,
+        "budget_exhausted_names": [],
+        "max_open": max_open,
         "max_exact_reads": max_exact_reads,
+        "max_pages_per_state": max_pages_per_state,
         "max_seconds": max_seconds,
+        "bulk_threshold": bulk_threshold,
+        "bulk_page_high_watermark": 0,
         "bulk_errors": [],
     }
+    emitted_alert_levels: set[tuple[str, str]] = set()
 
     def _publish_stats() -> None:
         stats["resolved_count"] = sum(1 for value in results.values() if "order" in value)
         stats["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        _enqueue_obligation_budget_alerts(
+            target_date=target_date,
+            stats=stats,
+            emitted_alert_levels=emitted_alert_levels,
+        )
         if stats_out is not None:
             stats_out.clear()
             stats_out.update(stats)
 
-    if len(keys) > OBLIGATION_DETAIL_MAX_OPEN:
+    if len(keys) > max_open:
         stats["budget_exhausted"] = True
+        stats["budget_exhausted_names"].append("max_open")
         for key in keys:
             results[str(key)] = {
                 "error": (
                     "obligation detail open-set budget exhausted: "
-                    f"{len(keys)} > {OBLIGATION_DETAIL_MAX_OPEN}"
+                    f"{len(keys)} > {max_open}"
                 )
             }
         _publish_stats()
@@ -1235,7 +1268,7 @@ def _fetch_prior_obligation_details(
         since = (target_date - timedelta(days=13)).isoformat()
         until = target_date.isoformat()
         for store_code, identities in sorted(unresolved_by_store.items()):
-            if len(identities) < OBLIGATION_DETAIL_BULK_THRESHOLD:
+            if len(identities) < bulk_threshold:
                 continue
             try:
                 client = clients.get(store_code)
@@ -1246,15 +1279,22 @@ def _fetch_prior_obligation_details(
                 for state in ("KASPI_DELIVERY", "ARCHIVE"):
                     if time.monotonic() - started >= max_seconds:
                         stats["budget_exhausted"] = True
+                        if "max_seconds" not in stats["budget_exhausted_names"]:
+                            stats["budget_exhausted_names"].append("max_seconds")
                         break
                     orders = client.list_all_orders(
                         state=state,
                         since=since,
                         until=until,
-                        max_pages=OBLIGATION_DETAIL_MAX_PAGES_PER_STATE,
+                        max_pages=max_pages_per_state,
                         raise_on_error=True,
                     )
                     stats["bulk_read_count"] += 1
+                    pages_consumed = max(1, math.ceil(len(orders) / 100))
+                    stats["bulk_page_high_watermark"] = max(
+                        int(stats["bulk_page_high_watermark"]),
+                        pages_consumed,
+                    )
                     for order in orders:
                         if not isinstance(order, dict):
                             continue
@@ -1264,8 +1304,14 @@ def _fetch_prior_obligation_details(
                             continue
                         results[obligation_key(store_code, observed_id)] = {"order": order}
             except Exception as exc:
+                error_text = f"{type(exc).__name__}: {exc}"
+                if "exceeds safety limit" in str(exc) or "exceeded safety limit" in str(exc):
+                    stats["budget_exhausted"] = True
+                    if "max_pages_per_state" not in stats["budget_exhausted_names"]:
+                        stats["budget_exhausted_names"].append("max_pages_per_state")
+                    stats["bulk_page_high_watermark"] = max_pages_per_state
                 stats["bulk_errors"].append(
-                    {"store_code": store_code, "error": f"{type(exc).__name__}: {exc}"}
+                    {"store_code": store_code, "error": error_text}
                 )
 
     for store_code, identities in sorted(unresolved_by_store.items()):
@@ -1277,6 +1323,12 @@ def _fetch_prior_obligation_details(
                 or time.monotonic() - started >= max_seconds
             ):
                 stats["budget_exhausted"] = True
+                if int(stats["exact_read_count"]) >= max_exact_reads:
+                    if "max_exact_reads" not in stats["budget_exhausted_names"]:
+                        stats["budget_exhausted_names"].append("max_exact_reads")
+                if time.monotonic() - started >= max_seconds:
+                    if "max_seconds" not in stats["budget_exhausted_names"]:
+                        stats["budget_exhausted_names"].append("max_seconds")
                 results[canonical_key] = {
                     "error": "obligation detail exact-read budget exhausted"
                 }
@@ -1358,10 +1410,17 @@ def _positive_int_env(name: str, default: int) -> int:
         return default
     try:
         value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
+        if value <= 0:
+            raise ValueError
+    except ValueError:
+        warning_key = (name, raw)
+        if warning_key not in _INVALID_ENV_WARNINGS_EMITTED:
+            print(
+                f"WARN: invalid {name}; using default {default}.",
+                file=sys.stderr,
+            )
+            _INVALID_ENV_WARNINGS_EMITTED.add(warning_key)
+        return default
     return value
 
 
@@ -1371,11 +1430,123 @@ def _positive_float_env(name: str, default: float) -> float:
         return default
     try:
         value = float(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a positive number") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be a positive number")
+        if value <= 0:
+            raise ValueError
+    except ValueError:
+        warning_key = (name, raw)
+        if warning_key not in _INVALID_ENV_WARNINGS_EMITTED:
+            print(
+                f"WARN: invalid {name}; using default {default}.",
+                file=sys.stderr,
+            )
+            _INVALID_ENV_WARNINGS_EMITTED.add(warning_key)
+        return default
     return value
+
+
+def _resolved_obligation_detail_limits() -> dict[str, int | float]:
+    return {
+        "max_open": _positive_int_env(
+            OBLIGATION_DETAIL_MAX_OPEN_ENV,
+            OBLIGATION_DETAIL_MAX_OPEN,
+        ),
+        "max_exact_reads": _positive_int_env(
+            OBLIGATION_DETAIL_MAX_EXACT_READS_ENV,
+            OBLIGATION_DETAIL_MAX_EXACT_READS,
+        ),
+        "max_pages_per_state": _positive_int_env(
+            OBLIGATION_DETAIL_MAX_PAGES_PER_STATE_ENV,
+            OBLIGATION_DETAIL_MAX_PAGES_PER_STATE,
+        ),
+        "max_seconds": _positive_float_env(
+            OBLIGATION_DETAIL_MAX_SECONDS_ENV,
+            OBLIGATION_DETAIL_MAX_SECONDS,
+        ),
+        "bulk_threshold": _positive_int_env(
+            OBLIGATION_DETAIL_BULK_THRESHOLD_ENV,
+            OBLIGATION_DETAIL_BULK_THRESHOLD,
+        ),
+    }
+
+
+def _resolved_stage_timeout_seconds(name: str) -> int:
+    default = int(STAGE_TIMEOUT_SECONDS.get(name, 10 * 60))
+    if name not in ENV_TUNABLE_STAGE_TIMEOUTS:
+        return default
+    env_name = f"AB_CLOSEOUT_STAGE_TIMEOUT_{name.upper()}"
+    return _positive_int_env(env_name, default)
+
+
+def _enqueue_obligation_budget_alerts(
+    *,
+    target_date: date | None,
+    stats: Mapping[str, Any],
+    emitted_alert_levels: set[tuple[str, str]],
+) -> None:
+    if target_date is None:
+        return
+    exhausted_names = {
+        str(value) for value in stats.get("budget_exhausted_names") or []
+    }
+    budgets = {
+        "max_open": (
+            float(stats.get("candidate_count") or 0),
+            float(stats.get("max_open") or OBLIGATION_DETAIL_MAX_OPEN),
+        ),
+        "max_exact_reads": (
+            float(stats.get("exact_read_count") or 0),
+            float(stats.get("max_exact_reads") or OBLIGATION_DETAIL_MAX_EXACT_READS),
+        ),
+        "max_pages_per_state": (
+            float(stats.get("bulk_page_high_watermark") or 0),
+            float(
+                stats.get("max_pages_per_state")
+                or OBLIGATION_DETAIL_MAX_PAGES_PER_STATE
+            ),
+        ),
+        "max_seconds": (
+            float(stats.get("elapsed_seconds") or 0),
+            float(stats.get("max_seconds") or OBLIGATION_DETAIL_MAX_SECONDS),
+        ),
+    }
+    target_iso = target_date.isoformat()
+    for budget_name, (consumed, limit) in budgets.items():
+        if limit <= 0:
+            continue
+        percent = consumed / limit
+        if percent >= OBLIGATION_BUDGET_WARNING_FRACTION:
+            alert_key = ("WARN", budget_name)
+            if alert_key not in emitted_alert_levels:
+                enqueue_alert(
+                    title="Google Ops Board obligation budget at 80%",
+                    lines=[
+                        f"Target date: {target_iso}",
+                        f"Budget: {budget_name}",
+                        f"Consumption: {consumed:g} / {limit:g} ({percent:.0%})",
+                    ],
+                    severity="WARN",
+                    dedup_key=f"closeout_obligation_budget_warn:{target_iso}:{budget_name}",
+                    dedup_window=OBLIGATION_BUDGET_ALERT_DEDUP_WINDOW,
+                )
+                emitted_alert_levels.add(alert_key)
+        if budget_name in exhausted_names:
+            alert_key = ("CRITICAL", budget_name)
+            if alert_key not in emitted_alert_levels:
+                enqueue_alert(
+                    title="Google Ops Board obligation budget exhausted",
+                    lines=[
+                        f"Target date: {target_iso}",
+                        f"Budget: {budget_name}",
+                        f"Consumption: {consumed:g} / {limit:g}",
+                        "Closeout retained unresolved obligations and failed closed.",
+                    ],
+                    severity="CRITICAL",
+                    dedup_key=(
+                        f"closeout_obligation_budget_critical:{target_iso}:{budget_name}"
+                    ),
+                    dedup_window=OBLIGATION_BUDGET_ALERT_DEDUP_WINDOW,
+                )
+                emitted_alert_levels.add(alert_key)
 
 
 def _existing_open_orders_present_in_current(

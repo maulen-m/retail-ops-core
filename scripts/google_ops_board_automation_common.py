@@ -51,6 +51,9 @@ AUTO_PROBABLE_CLOSEOUT_MINUTE = 57
 AUTO_PROBABLE_FILL_HOUR_ENV = "AB_AUTO_PROBABLE_FILL_HOUR"
 AUTO_PROBABLE_FILL_MINUTE_ENV = "AB_AUTO_PROBABLE_FILL_MINUTE"
 READY_DEBOUNCE_SECONDS = 60
+EARLY_CLOSEOUT_WATCH_START_HOUR_ENV = "AB_EARLY_CLOSEOUT_WATCH_START_HOUR"
+EARLY_CLOSEOUT_WATCH_END_HOUR_ENV = "AB_EARLY_CLOSEOUT_WATCH_END_HOUR"
+READY_DEBOUNCE_SECONDS_ENV = "AB_READY_DEBOUNCE_SECONDS"
 HALT_BARRIER_SCHEMA_VERSION = 1
 
 
@@ -78,6 +81,48 @@ def resolved_auto_probable_closeout_time() -> tuple[int, int]:
 def auto_probable_closeout_time_label() -> str:
     hour, minute = resolved_auto_probable_closeout_time()
     return f"{hour:02d}:{minute:02d}"
+
+
+@lru_cache(maxsize=1)
+def resolved_early_closeout_watch_window() -> tuple[int, int]:
+    """Resolve optional watch-window overrides once per process."""
+    raw_start = str(os.environ.get(EARLY_CLOSEOUT_WATCH_START_HOUR_ENV) or "").strip()
+    raw_end = str(os.environ.get(EARLY_CLOSEOUT_WATCH_END_HOUR_ENV) or "").strip()
+    try:
+        start_hour = EARLY_CLOSEOUT_WATCH_START_HOUR if not raw_start else int(raw_start)
+        end_hour = EARLY_CLOSEOUT_WATCH_END_HOUR if not raw_end else int(raw_end)
+        if not 0 <= start_hour <= 23 or not 1 <= end_hour <= 24:
+            raise ValueError("watch hour out of range")
+        if start_hour >= end_hour:
+            raise ValueError("watch window must end after it starts")
+    except (TypeError, ValueError):
+        print(
+            "WARN: invalid AB_EARLY_CLOSEOUT_WATCH_START_HOUR/"
+            "AB_EARLY_CLOSEOUT_WATCH_END_HOUR; "
+            f"using default {EARLY_CLOSEOUT_WATCH_START_HOUR:02d}:00-"
+            f"{EARLY_CLOSEOUT_WATCH_END_HOUR:02d}:00.",
+            file=sys.stderr,
+        )
+        return EARLY_CLOSEOUT_WATCH_START_HOUR, EARLY_CLOSEOUT_WATCH_END_HOUR
+    return start_hour, end_hour
+
+
+@lru_cache(maxsize=1)
+def resolved_ready_debounce_seconds() -> int:
+    """Resolve the optional READY debounce override once per process."""
+    raw = str(os.environ.get(READY_DEBOUNCE_SECONDS_ENV) or "").strip()
+    try:
+        seconds = READY_DEBOUNCE_SECONDS if not raw else int(raw)
+        if seconds <= 0:
+            raise ValueError("debounce must be positive")
+    except (TypeError, ValueError):
+        print(
+            f"WARN: invalid {READY_DEBOUNCE_SECONDS_ENV}; "
+            f"using default {READY_DEBOUNCE_SECONDS}.",
+            file=sys.stderr,
+        )
+        return READY_DEBOUNCE_SECONDS
+    return seconds
 
 
 def _entry_slug(value: str) -> str:
@@ -209,8 +254,9 @@ def ensure_kaspi_api_call_ledger_env(
 def within_early_closeout_watch_window(now: datetime | None = None) -> bool:
     local_now = (now or now_almaty()).astimezone(ALMATY_TZ)
     current_minutes = local_now.hour * 60 + local_now.minute
-    start_minutes = EARLY_CLOSEOUT_WATCH_START_HOUR * 60
-    end_minutes = EARLY_CLOSEOUT_WATCH_END_HOUR * 60 + EARLY_CLOSEOUT_WATCH_END_MINUTE
+    start_hour, end_hour = resolved_early_closeout_watch_window()
+    start_minutes = start_hour * 60
+    end_minutes = end_hour * 60 + EARLY_CLOSEOUT_WATCH_END_MINUTE
     return start_minutes <= current_minutes < end_minutes
 
 
@@ -607,8 +653,13 @@ def evaluate_ready_debounce(
     now: datetime,
     ready: bool,
     ready_set_at: str = "",
-    debounce_seconds: int = READY_DEBOUNCE_SECONDS,
+    debounce_seconds: int | None = None,
 ) -> dict[str, Any]:
+    effective_debounce_seconds = (
+        resolved_ready_debounce_seconds()
+        if debounce_seconds is None
+        else int(debounce_seconds)
+    )
     if not ready:
         return {"action": "clear", "elapsed_seconds": 0, "remaining_seconds": 0}
 
@@ -626,7 +677,7 @@ def evaluate_ready_debounce(
                 "armed_at": now.isoformat(),
             },
             "elapsed_seconds": 0,
-            "remaining_seconds": int(debounce_seconds),
+            "remaining_seconds": effective_debounce_seconds,
         }
 
     try:
@@ -640,15 +691,15 @@ def evaluate_ready_debounce(
                 "armed_at": now.isoformat(),
             },
             "elapsed_seconds": 0,
-            "remaining_seconds": int(debounce_seconds),
+            "remaining_seconds": effective_debounce_seconds,
         }
 
     if armed_at.tzinfo is None:
         armed_at = armed_at.replace(tzinfo=ALMATY_TZ)
 
     elapsed_seconds = max(0, int((now - armed_at).total_seconds()))
-    remaining = max(0, int(debounce_seconds) - elapsed_seconds)
-    if elapsed_seconds >= int(debounce_seconds):
+    remaining = max(0, effective_debounce_seconds - elapsed_seconds)
+    if elapsed_seconds >= effective_debounce_seconds:
         return {
             "action": "trigger",
             "state": {

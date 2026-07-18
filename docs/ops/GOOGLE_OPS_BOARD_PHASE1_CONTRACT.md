@@ -94,6 +94,30 @@ Lock the DB-first Google Sheets ops board behavior so daily publisher, enrichmen
   - this path refreshes `fact_orders_kaspi` shipped timestamps from Kaspi API states `KASPI_DELIVERY` + `ARCHIVE`; it does not publish Google Sheets or send bundles
 - installer: `scripts/install_scheduler.sh`
 
+## Runtime Safety Knobs
+
+Unset environment variables preserve the listed defaults. A blank value is
+treated as unset. An invalid or non-positive value falls back to the default
+and emits one `WARN` line per process. Obligation budgets enqueue a deduplicated
+`WARN` at 80% consumption and a separate `CRITICAL` alert when exhausted.
+
+| Name | Default | Consumer | File:line |
+| --- | ---: | --- | --- |
+| `OBLIGATION_DETAIL_MAX_OPEN` | `100` | Maximum unresolved obligation identities admitted to detail reconciliation | `scripts/run_google_ops_board_closeout.py:1243` |
+| `OBLIGATION_DETAIL_MAX_EXACT_READS` | `60` | Maximum per-order exact Kaspi reads during obligation reconciliation | `scripts/run_google_ops_board_closeout.py:1322` |
+| `OBLIGATION_DETAIL_MAX_PAGES_PER_STATE` | `10` | Per-state bulk Kaspi pagination ceiling | `scripts/run_google_ops_board_closeout.py:1285` |
+| `OBLIGATION_DETAIL_MAX_SECONDS` | `120.0` | Elapsed-time ceiling for obligation detail reconciliation | `scripts/run_google_ops_board_closeout.py:1280` |
+| `OBLIGATION_DETAIL_BULK_THRESHOLD` | `5` | Minimum unresolved identities per store before bulk state reads | `scripts/run_google_ops_board_closeout.py:1271` |
+| `AB_CLOSEOUT_STAGE_TIMEOUT_SIZE_WRITEBACK` | `600` | `size_writeback` subprocess timeout | `scripts/run_google_ops_board_closeout.py:598` |
+| `AB_CLOSEOUT_STAGE_TIMEOUT_SHIPPING` | `1200` | `shipping` subprocess timeout | `scripts/run_google_ops_board_closeout.py:598` |
+| `AB_CLOSEOUT_STAGE_TIMEOUT_DOWNLOAD_WAYBILLS` | `1200` | `download_waybills` subprocess timeout | `scripts/run_google_ops_board_closeout.py:598` |
+| `AB_CLOSEOUT_STAGE_TIMEOUT_BUILD_WAYBILLS` | `600` | `build_waybills` subprocess timeout | `scripts/run_google_ops_board_closeout.py:598` |
+| `AB_CLOSEOUT_STAGE_TIMEOUT_DELIVERY_SEND` | `1200` | `delivery_send` subprocess timeout | `scripts/run_google_ops_board_closeout.py:598` |
+| `AB_CLOSEOUT_STAGE_TIMEOUT_SHIPPED_TRUTH_SYNC` | `600` | `shipped_truth_sync` subprocess timeout | `scripts/run_google_ops_board_closeout.py:598` |
+| `AB_EARLY_CLOSEOUT_WATCH_START_HOUR` | `9` | Inclusive local start hour for the READY watcher | `scripts/google_ops_board_automation_common.py:254` |
+| `AB_EARLY_CLOSEOUT_WATCH_END_HOUR` | `24` | Exclusive local end hour for the READY watcher | `scripts/google_ops_board_automation_common.py:254` |
+| `AB_READY_DEBOUNCE_SECONDS` | `60` | Stable-READY delay before closeout launch | `scripts/run_google_ops_board_closeout_watch_scheduler.py:925` |
+
 ## Non-Negotiable Runtime Rules
 - `SalesRaw_Today` row grain is the shipment/order line, keyed by
   `fact_orders_kaspi.id` after DB import/enrichment. Import and board publish must

@@ -11,6 +11,7 @@ import pytest
 
 from scripts import run_google_ops_board_closeout as closeout_mod
 from scripts import validate_google_closeout_expected_orders as expected_orders_mod
+from core.alerts import ops_alert_outbox as outbox_mod
 from core.integrations.google_ops_board import load_ops_board_contract
 from core.ops.google_board_day_state import set_store_day_state
 from core.ops.waybill_send_batch import compute_manifest_batch_hash
@@ -19,6 +20,7 @@ from core.ops.waybill_shipping_obligations import required_line_scope_hash
 
 @pytest.fixture(autouse=True)
 def _isolate_closeout_runtime_defaults(monkeypatch, tmp_path: Path) -> None:
+    closeout_mod._INVALID_ENV_WARNINGS_EMITTED.clear()
     monkeypatch.setattr(closeout_mod, "DEFAULT_RUN_ROOT", tmp_path / "workflow_runs")
     monkeypatch.setattr(
         closeout_mod,
@@ -542,6 +544,115 @@ def test_stage_runner_enforces_named_timeout_and_persists_timeout_report(
     assert report["timed_out"] is True
     assert report["timeout_seconds"] == closeout_mod.STAGE_TIMEOUT_SECONDS["telegram_delivery"]
     assert json.loads(report_path.read_text(encoding="utf-8"))["timed_out"] is True
+
+
+def test_closeout_runtime_knob_defaults_match_existing_literals(monkeypatch) -> None:
+    for env_name in (
+        closeout_mod.OBLIGATION_DETAIL_MAX_OPEN_ENV,
+        closeout_mod.OBLIGATION_DETAIL_MAX_EXACT_READS_ENV,
+        closeout_mod.OBLIGATION_DETAIL_MAX_PAGES_PER_STATE_ENV,
+        closeout_mod.OBLIGATION_DETAIL_MAX_SECONDS_ENV,
+        closeout_mod.OBLIGATION_DETAIL_BULK_THRESHOLD_ENV,
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    assert closeout_mod._resolved_obligation_detail_limits() == {
+        "max_open": 100,
+        "max_exact_reads": 60,
+        "max_pages_per_state": 10,
+        "max_seconds": 120.0,
+        "bulk_threshold": 5,
+    }
+
+
+@pytest.mark.parametrize(
+    ("env_name", "key", "raw_value", "expected"),
+    [
+        (closeout_mod.OBLIGATION_DETAIL_MAX_OPEN_ENV, "max_open", "125", 125),
+        (
+            closeout_mod.OBLIGATION_DETAIL_MAX_EXACT_READS_ENV,
+            "max_exact_reads",
+            "75",
+            75,
+        ),
+        (
+            closeout_mod.OBLIGATION_DETAIL_MAX_PAGES_PER_STATE_ENV,
+            "max_pages_per_state",
+            "12",
+            12,
+        ),
+        (
+            closeout_mod.OBLIGATION_DETAIL_MAX_SECONDS_ENV,
+            "max_seconds",
+            "150.5",
+            150.5,
+        ),
+        (
+            closeout_mod.OBLIGATION_DETAIL_BULK_THRESHOLD_ENV,
+            "bulk_threshold",
+            "8",
+            8,
+        ),
+    ],
+)
+def test_closeout_obligation_knobs_honor_environment(
+    monkeypatch,
+    env_name: str,
+    key: str,
+    raw_value: str,
+    expected: int | float,
+) -> None:
+    monkeypatch.setenv(env_name, raw_value)
+
+    assert closeout_mod._resolved_obligation_detail_limits()[key] == expected
+
+
+@pytest.mark.parametrize(
+    ("stage", "default"),
+    [
+        ("size_writeback", 600),
+        ("shipping", 1200),
+        ("download_waybills", 1200),
+        ("build_waybills", 600),
+        ("delivery_send", 1200),
+        ("shipped_truth_sync", 600),
+    ],
+)
+def test_closeout_stage_timeout_knobs_honor_environment(
+    monkeypatch,
+    stage: str,
+    default: int,
+) -> None:
+    env_name = f"AB_CLOSEOUT_STAGE_TIMEOUT_{stage.upper()}"
+    monkeypatch.delenv(env_name, raising=False)
+    assert closeout_mod._resolved_stage_timeout_seconds(stage) == default
+
+    monkeypatch.setenv(env_name, str(default + 37))
+    assert closeout_mod._resolved_stage_timeout_seconds(stage) == default + 37
+
+
+def test_invalid_closeout_knob_warns_once_and_uses_default(monkeypatch, capsys) -> None:
+    env_name = closeout_mod.OBLIGATION_DETAIL_MAX_OPEN_ENV
+    monkeypatch.setenv(env_name, "invalid")
+
+    assert closeout_mod._resolved_obligation_detail_limits()["max_open"] == 100
+    assert closeout_mod._resolved_obligation_detail_limits()["max_open"] == 100
+    captured = capsys.readouterr()
+    assert captured.err.count("WARN:") == 1
+    assert env_name in captured.err
+    assert "using default 100" in captured.err
+
+
+def test_invalid_stage_timeout_warns_once_and_uses_default(monkeypatch, capsys) -> None:
+    env_name = "AB_CLOSEOUT_STAGE_TIMEOUT_SHIPPING"
+    monkeypatch.setenv(env_name, "0")
+
+    assert closeout_mod._resolved_stage_timeout_seconds("shipping") == 1200
+    assert closeout_mod._resolved_stage_timeout_seconds("shipping") == 1200
+    captured = capsys.readouterr()
+    assert captured.err.count("WARN:") == 1
+    assert env_name in captured.err
+    assert "using default 1200" in captured.err
 
 
 def test_apply_custom_run_root_requires_explicit_canonical_obligation_ledger(
@@ -1488,14 +1599,14 @@ def _obligation_ledger(store: str, count: int) -> dict[str, object]:
 
 def test_obligation_detail_resolver_uses_bulk_reads_before_exact_fallback(monkeypatch) -> None:
     exact_reads: list[str] = []
-    bulk_reads: list[str] = []
+    bulk_reads: list[tuple[str, int]] = []
 
     class _Client:
         def __init__(self, store_code: str):
             assert store_code == "UNIVERSAL"
 
         def list_all_orders(self, *, state, since, until, max_pages, raise_on_error):
-            bulk_reads.append(state)
+            bulk_reads.append((state, max_pages))
             if state != "KASPI_DELIVERY":
                 return []
             return [
@@ -1508,6 +1619,7 @@ def test_obligation_detail_resolver_uses_bulk_reads_before_exact_fallback(monkey
             raise AssertionError("bulk resolution should cover this obligation")
 
     monkeypatch.setattr(closeout_mod, "KaspiAPIClient", _Client)
+    monkeypatch.setenv(closeout_mod.OBLIGATION_DETAIL_MAX_PAGES_PER_STATE_ENV, "7")
     stats: dict[str, object] = {}
     result = closeout_mod._fetch_prior_obligation_details(
         ledger=_obligation_ledger("UNIVERSAL", 20),
@@ -1518,7 +1630,7 @@ def test_obligation_detail_resolver_uses_bulk_reads_before_exact_fallback(monkey
 
     assert len(result) == 20
     assert all("order" in item for item in result.values())
-    assert bulk_reads == ["KASPI_DELIVERY", "ARCHIVE"]
+    assert bulk_reads == [("KASPI_DELIVERY", 7), ("ARCHIVE", 7)]
     assert exact_reads == []
     assert stats["exact_read_count"] == 0
     assert stats["resolved_count"] == 20
@@ -1543,6 +1655,12 @@ def test_obligation_detail_resolver_fails_closed_when_exact_budget_is_exhausted(
             return _Response(order_id)
 
     monkeypatch.setattr(closeout_mod, "KaspiAPIClient", _Client)
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        closeout_mod,
+        "enqueue_alert",
+        lambda **kwargs: alerts.append(kwargs) or False,
+    )
     monkeypatch.delenv("OBLIGATION_DETAIL_MAX_EXACT_READS", raising=False)
     monkeypatch.delenv("OBLIGATION_DETAIL_MAX_SECONDS", raising=False)
     stats: dict[str, object] = {}
@@ -1560,6 +1678,62 @@ def test_obligation_detail_resolver_fails_closed_when_exact_budget_is_exhausted(
     assert stats["max_exact_reads"] == 60
     assert stats["max_seconds"] == 120.0
     assert stats["budget_exhausted"] is True
+    assert stats["budget_exhausted_names"] == ["max_exact_reads"]
+    assert [alert["severity"] for alert in alerts] == ["WARN", "CRITICAL"]
+    assert alerts[0]["dedup_key"] == (
+        "closeout_obligation_budget_warn:2026-07-14:max_exact_reads"
+    )
+    assert alerts[1]["dedup_key"] == (
+        "closeout_obligation_budget_critical:2026-07-14:max_exact_reads"
+    )
+
+
+def test_obligation_budget_warn_is_deduplicated_per_target_date_and_budget(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class _Response:
+        success = True
+        error = None
+
+        def __init__(self, order_id: str):
+            self.data = {"attributes": {"code": order_id}}
+
+    class _Client:
+        def __init__(self, store_code: str):
+            self.store_code = store_code
+
+        def list_all_orders(self, **_kwargs):
+            raise AssertionError("bulk reads are disabled for this focused budget test")
+
+        def get_order(self, order_id: str):
+            return _Response(order_id)
+
+    outbox_path = tmp_path / "ops_alert_outbox.jsonl"
+    monkeypatch.setattr(closeout_mod, "KaspiAPIClient", _Client)
+    monkeypatch.setattr(closeout_mod, "enqueue_alert", outbox_mod.enqueue_alert)
+    monkeypatch.setattr(outbox_mod, "DEFAULT_OUTBOX_PATH", outbox_path)
+    monkeypatch.setattr(outbox_mod, "_deliver", lambda _entry: True)
+    monkeypatch.setenv(closeout_mod.OBLIGATION_DETAIL_BULK_THRESHOLD_ENV, "100")
+    monkeypatch.setenv(closeout_mod.OBLIGATION_DETAIL_MAX_EXACT_READS_ENV, "60")
+
+    for _ in range(2):
+        closeout_mod._fetch_prior_obligation_details(
+            ledger=_obligation_ledger("UNIVERSAL", 48),
+            current_active_order_ids_by_store={"UNIVERSAL": set()},
+            target_date=closeout_mod.date(2026, 7, 14),
+        )
+
+    entries = [
+        json.loads(line)
+        for line in outbox_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(entries) == 1
+    assert entries[0]["severity"] == "WARN"
+    assert entries[0]["dedup_key"] == (
+        "closeout_obligation_budget_warn:2026-07-14:max_exact_reads"
+    )
 
 
 def test_budget_exhaustion_is_non_sticky_and_same_ready_retry_converges(

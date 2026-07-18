@@ -63,6 +63,8 @@ def _stub_closeout_health_green(monkeypatch, tmp_path: Path) -> None:
 @pytest.fixture(autouse=True)
 def _isolate_live_closeout_halt_barrier(monkeypatch):
     common_mod.resolved_auto_probable_closeout_time.cache_clear()
+    common_mod.resolved_early_closeout_watch_window.cache_clear()
+    common_mod.resolved_ready_debounce_seconds.cache_clear()
 
     def _allow_automation(**_kwargs):
         return {
@@ -85,6 +87,8 @@ def _isolate_live_closeout_halt_barrier(monkeypatch):
     monkeypatch.setattr(closeout_scheduler_mod, "record_lock_contention", lambda _entry: 1)
     yield
     common_mod.resolved_auto_probable_closeout_time.cache_clear()
+    common_mod.resolved_early_closeout_watch_window.cache_clear()
+    common_mod.resolved_ready_debounce_seconds.cache_clear()
 
 
 def test_early_closeout_watch_window_starts_for_morning_employee_ready() -> None:
@@ -96,6 +100,96 @@ def test_early_closeout_watch_window_starts_for_morning_employee_ready() -> None
     assert common_mod.within_early_closeout_watch_window(datetime(2026, 4, 15, 20, 30, tzinfo=tz))
     assert common_mod.within_early_closeout_watch_window(datetime(2026, 4, 15, 23, 59, tzinfo=tz))
     assert not common_mod.within_early_closeout_watch_window(datetime(2026, 4, 15, 8, 59, tzinfo=tz))
+
+
+def test_watch_window_and_ready_debounce_defaults_remain_unchanged(monkeypatch) -> None:
+    monkeypatch.delenv(common_mod.EARLY_CLOSEOUT_WATCH_START_HOUR_ENV, raising=False)
+    monkeypatch.delenv(common_mod.EARLY_CLOSEOUT_WATCH_END_HOUR_ENV, raising=False)
+    monkeypatch.delenv(common_mod.READY_DEBOUNCE_SECONDS_ENV, raising=False)
+    common_mod.resolved_early_closeout_watch_window.cache_clear()
+    common_mod.resolved_ready_debounce_seconds.cache_clear()
+
+    assert common_mod.resolved_early_closeout_watch_window() == (9, 24)
+    assert common_mod.resolved_ready_debounce_seconds() == 60
+
+
+def test_watch_window_honors_environment(monkeypatch) -> None:
+    tz = ZoneInfo("Asia/Almaty")
+    monkeypatch.setenv(common_mod.EARLY_CLOSEOUT_WATCH_START_HOUR_ENV, "10")
+    monkeypatch.setenv(common_mod.EARLY_CLOSEOUT_WATCH_END_HOUR_ENV, "22")
+    common_mod.resolved_early_closeout_watch_window.cache_clear()
+
+    assert common_mod.resolved_early_closeout_watch_window() == (10, 22)
+    assert not common_mod.within_early_closeout_watch_window(
+        datetime(2026, 4, 15, 9, 59, tzinfo=tz)
+    )
+    assert common_mod.within_early_closeout_watch_window(
+        datetime(2026, 4, 15, 10, 0, tzinfo=tz)
+    )
+    assert not common_mod.within_early_closeout_watch_window(
+        datetime(2026, 4, 15, 22, 0, tzinfo=tz)
+    )
+
+
+def test_ready_debounce_honors_environment(monkeypatch) -> None:
+    tz = ZoneInfo("Asia/Almaty")
+    target_date = date(2026, 4, 15)
+    armed_at = datetime(2026, 4, 15, 17, 0, tzinfo=tz)
+    state = {
+        "target_date": target_date.isoformat(),
+        "ready_set_at": "ready-1",
+        "armed_at": armed_at.isoformat(),
+    }
+    monkeypatch.setenv(common_mod.READY_DEBOUNCE_SECONDS_ENV, "90")
+    common_mod.resolved_ready_debounce_seconds.cache_clear()
+
+    waiting = common_mod.evaluate_ready_debounce(
+        state=state,
+        target_date=target_date,
+        now=datetime(2026, 4, 15, 17, 1, tzinfo=tz),
+        ready=True,
+        ready_set_at="ready-1",
+    )
+    triggered = common_mod.evaluate_ready_debounce(
+        state=state,
+        target_date=target_date,
+        now=datetime(2026, 4, 15, 17, 1, 30, tzinfo=tz),
+        ready=True,
+        ready_set_at="ready-1",
+    )
+
+    assert waiting["action"] == "wait"
+    assert waiting["remaining_seconds"] == 30
+    assert triggered["action"] == "trigger"
+
+
+def test_invalid_watch_window_environment_warns_once_and_uses_default(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv(common_mod.EARLY_CLOSEOUT_WATCH_START_HOUR_ENV, "24")
+    monkeypatch.setenv(common_mod.EARLY_CLOSEOUT_WATCH_END_HOUR_ENV, "9")
+    common_mod.resolved_early_closeout_watch_window.cache_clear()
+
+    assert common_mod.resolved_early_closeout_watch_window() == (9, 24)
+    assert common_mod.resolved_early_closeout_watch_window() == (9, 24)
+    captured = capsys.readouterr()
+    assert captured.err.count("WARN:") == 1
+    assert "using default 09:00-24:00" in captured.err
+
+
+def test_invalid_ready_debounce_environment_warns_once_and_uses_default(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv(common_mod.READY_DEBOUNCE_SECONDS_ENV, "invalid")
+    common_mod.resolved_ready_debounce_seconds.cache_clear()
+
+    assert common_mod.resolved_ready_debounce_seconds() == 60
+    assert common_mod.resolved_ready_debounce_seconds() == 60
+    captured = capsys.readouterr()
+    assert captured.err.count("WARN:") == 1
+    assert "using default 60" in captured.err
 
 
 def test_auto_probable_closeout_defaults_remain_1857(monkeypatch) -> None:
