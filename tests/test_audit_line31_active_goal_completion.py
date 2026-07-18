@@ -10,6 +10,8 @@ from scripts.audit_line31_active_goal_completion import build_completion_audit
 from scripts.validate_line31_final_creative_mapping import required_owner_approval_phrase
 from scripts.validate_line31_launch_readiness import REQUIRED_CLOSEOUT_TOKENS, READY_GATE
 
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
+
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -28,12 +30,7 @@ def _write_ready_mapping(root: Path) -> None:
     thumbnail = root / "thumb.png"
     video.write_bytes(b"video")
     thumbnail.write_bytes(b"thumb")
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     evidence = root / "owner_approval_evidence.md"
     evidence.write_text(f"# Approval\n\n{phrase}\n", encoding="utf-8")
     tracking_evidence = root / "tracking_redirect_qa.json"
@@ -97,6 +94,7 @@ def _write_ready_mapping(root: Path) -> None:
     )
     mapping = {
         "purpose": "LINE31 countrywide Meta launch final creative mapping intake template",
+        "source_gate": "RUNTIME_ASSET_MAPPING_PREPARED",
         "creative_ready_declaration_received": True,
         "internal_kaspi_line31_campaigns_policy": (
             "KEEP_ON_UNTIL_OWNER_CREATIVE_READY_DECLARATION_AND_SEPARATE_PAUSE_APPROVAL"
@@ -143,10 +141,7 @@ def _write_ready_mapping(root: Path) -> None:
         ],
         "publish_authority": {
             "owner_approval_required": True,
-            "approval_phrase_path": (
-                "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-                "final_creative_publish_intake_and_approval.md"
-            ),
+            "approval_phrase_path": str(SYNTHETIC_APPROVAL),
             "approved": True,
             "approval_evidence_path": str(evidence),
             "approval_evidence_sha256": _sha(evidence),
@@ -167,17 +162,17 @@ def test_current_active_goal_completion_audit_is_incomplete(tmp_path: Path) -> N
     assert audit["complete"] is False
     assert audit["gate"] == "INCOMPLETE"
     assert audit["ready_to_publish"] is False
-    assert audit["pending_ok"] is True
-    assert audit["strict_ok"] is True
+    assert audit["pending_ok"] is False
+    assert audit["strict_ok"] is False
     assert audit["current_noncreative_matrix_refreshed"] is True
     assert audit["current_noncreative_matrix"]["overall_gate"] in {"GREEN", "YELLOW"}
-    assert (
-        requirement_status["Non-creative LINE31 launch readiness remains green"]
-        == "ACHIEVED"
-    )
-    assert (
-        requirement_status["Option 2 unrelated-failure repair first is repaired/quarantined"]
-        == "ACHIEVED"
+    assert requirement_status["Non-creative LINE31 launch readiness remains green"] == "PENDING"
+    assert requirement_status[
+        "Option 2 unrelated-failure repair first is repaired/quarantined"
+    ] == (
+        "ACHIEVED"
+        if audit["current_noncreative_matrix"].get("can_use_green_except_creative")
+        else "PENDING"
     )
     assert (
         requirement_status["Owner objective source freshness is green"]
@@ -229,7 +224,7 @@ def test_current_active_goal_completion_audit_is_incomplete(tmp_path: Path) -> N
     )
     assert any(
         row["requirement"] == "Exact owner Meta publish approval evidence is recorded and SHA-verified"
-        and row["status"] == "ACHIEVED"
+        and row["status"] == "PENDING"
         for row in audit["requirements"]
     )
     assert audit["next_action"].startswith("Keep the partial LINE31 Meta shell paused.")

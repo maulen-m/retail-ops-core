@@ -14,7 +14,13 @@ python3 scripts/validate_line31_launch_readiness.py --allow-pending-creative
 
 This mode may pass only when the non-creative LINE31 evidence packet is green, the latest current synthesis matrix has `can_use_green_except_creative=true`, and the creative mapping template is structurally valid. It must still report that final creative mapping and owner publish approval are pending.
 
-If the current matrix is stale or failing, refresh it before making a launch decision. After the 2026-06-01 current refresh, the LINE31 launch-blocking non-creative matrix is green; strict mode still fails because final creative mapping and exact owner approval are pending.
+If the current matrix is stale or failing, refresh it before making a launch decision. As of the 2026-07-16 rebaseline, current LINE31 truth is YELLOW: final mapping/approval remain pending and the current matrix retains non-creative blockers. Historical `GREEN_EXCEPT_CREATIVE` packets are evidence only and must not be promoted to current authority.
+
+The portable structural template is tracked at:
+
+`config/line31/final_creative_mapping_template.json`
+
+It is deliberately neutral (`source_gate=PENDING_RUNTIME_EVIDENCE`, owner approval false) and is not current business truth. Runtime mappings, current tracking QA, and SHA-bound approval phrases remain timestamped evidence. Code and tests must not require an ignored `exports/` artifact merely to load the structural template, and must never use an older owner-approved mapping as a fallback.
 
 The current matrix deliberately separates LINE31 launch-blocking gates from broader repo-health advisory gates. `validate_params.py --strict` remains visible as `scope=repo_wide_advisory` and may appear as `YELLOW_ADVISORY` when current-day order-processing or derived-report facts are unsettled. That advisory state must be recorded in `advisory_repo_blockers`, but it does not block LINE31 `GREEN_EXCEPT_CREATIVE` when all `scope=line31_launch_blocking` validators pass and `retained_noncreative_blockers=[]`.
 
@@ -57,6 +63,7 @@ The preparation helper is the preferred launch-day bridge from final local video
 
 ```bash
 python3 scripts/prepare_line31_final_creative_mapping.py \
+  --template config/line31/final_creative_mapping_template.json \
   --creative-id line31_countrywide_v1 \
   --asset-dir /absolute/path/to/final_creative_drop_folder \
   --final-asset-uri https://cdn.acmewear.kz/line31/REPLACE_WITH_FINAL_VIDEO.mp4 \
@@ -91,6 +98,7 @@ python3 scripts/prepare_line31_launch_readiness_from_assets.py \
   --landing-url 'https://acmewear.pro/line31' \
   --kaspi-marketplace-cta-url 'https://kaspi.kz/shop/p/REPLACE_WITH_FINAL_LINE31_PRODUCT_SLUG/' \
   --creative-ready-declared \
+  --approval-phrase-path /absolute/path/to/current_sha_bound_owner_approval_phrase.txt \
   --approval-text-file /absolute/path/to/pasted_owner_approval.txt \
   --tracking-qa-evidence-file /absolute/path/to/current_line31_tracking_redirect_qa.json \
   --overwrite \
@@ -144,10 +152,11 @@ Do not use `--ignore-current-noncreative-matrix` for the real launch state. That
 
 Do not use `--skip-noncreative-refresh` for the real launch state. That flag is only for fixtures or historical inspection where refreshing current validators would hide the older evidence being inspected.
 
-After the owner provides the exact final approval phrase, record it as local evidence before regenerating the mapping:
+After the current launch sequence generates a phrase bound to the exact mapping and tracking-QA hashes and the owner provides that exact phrase, record it as local evidence before regenerating the mapping:
 
 ```bash
 python3 scripts/record_line31_owner_publish_approval.py \
+  --approval-phrase-path /absolute/path/to/current_sha_bound_owner_phrase.txt \
   --mapping exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_asset_mapping_template.json \
   --require-mapping-ready \
   --approval-text-file /absolute/path/to/pasted_owner_approval.txt \
@@ -216,8 +225,4 @@ This command writes `docs/current/LINE31_LAUNCH_CURRENT_STATUS.json` and `docs/c
 
 Internal Kaspi LINE31 campaigns stay ON until the owner separately declares final creative readiness and gives an explicit pause approval. The Meta launch readiness validator must not blend internal Kaspi directional activity into Meta conversion truth.
 
-Final publish is blocked unless the exact owner approval phrase in:
-
-`exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/final_creative_publish_intake_and_approval.md`
-
-is present in a separate approval-evidence file after final creative mapping is filled, current tracking/redirect QA evidence is SHA-verified, and strict validators pass.
+Final publish is blocked unless the current sequence-generated approval phrase is SHA-bound to the exact mapping and tracking-QA evidence and is present in a separate approval-evidence file after final creative mapping is filled, current tracking/redirect QA evidence is SHA-verified, and strict validators pass. A missing phrase path must fail closed; no historical approval file or mapping may be selected by modification time as current authority.

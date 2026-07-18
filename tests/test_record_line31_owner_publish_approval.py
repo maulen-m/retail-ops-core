@@ -11,8 +11,7 @@ from scripts.validate_line31_final_creative_mapping import required_owner_approv
 
 
 APPROVAL_TEMPLATE = Path(
-    "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-    "final_creative_publish_intake_and_approval.md"
+    "tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt"
 )
 
 
@@ -119,6 +118,8 @@ def _write_ready_pending_approval_mapping(tmp_path: Path) -> Path:
             "18",
             "--utm-placement",
             "reels",
+            "--approval-phrase-path",
+            str(APPROVAL_TEMPLATE),
             "--creative-ready-declared",
             "--tracking-qa-evidence-file",
             str(tracking),
@@ -144,6 +145,8 @@ def test_record_approval_from_file_writes_evidence_and_hash(tmp_path: Path) -> N
             "scripts/record_line31_owner_publish_approval.py",
             "--approval-text-file",
             str(source),
+            "--approval-phrase-path",
+            str(APPROVAL_TEMPLATE),
             "--output-dir",
             str(output_dir),
             "--json",
@@ -179,6 +182,8 @@ def test_record_approval_requires_mapping_ready_when_requested(tmp_path: Path) -
             "scripts/record_line31_owner_publish_approval.py",
             "--approval-text-file",
             str(source),
+            "--approval-phrase-path",
+            str(APPROVAL_TEMPLATE),
             "--mapping",
             str(mapping),
             "--require-mapping-ready",
@@ -244,13 +249,10 @@ def test_record_approval_rejects_unready_mapping_when_required(tmp_path: Path) -
             "scripts/record_line31_owner_publish_approval.py",
             "--approval-text-file",
             str(source),
+            "--approval-phrase-path",
+            str(APPROVAL_TEMPLATE),
             "--mapping",
-            str(
-                Path(
-                    "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-                    "final_creative_asset_mapping_template.json"
-                )
-            ),
+            str(Path("config/line31/final_creative_mapping_template.json")),
             "--require-mapping-ready",
             "--output-dir",
             str(tmp_path / "evidence"),
@@ -273,6 +275,8 @@ def test_record_approval_from_stdin(tmp_path: Path) -> None:
             sys.executable,
             "scripts/record_line31_owner_publish_approval.py",
             "--from-stdin",
+            "--approval-phrase-path",
+            str(APPROVAL_TEMPLATE),
             "--output-dir",
             str(tmp_path),
             "--json",
@@ -298,6 +302,8 @@ def test_record_approval_rejects_non_exact_text(tmp_path: Path) -> None:
             "scripts/record_line31_owner_publish_approval.py",
             "--approval-text-file",
             str(source),
+            "--approval-phrase-path",
+            str(APPROVAL_TEMPLATE),
             "--output-dir",
             str(tmp_path),
             "--json",
@@ -324,6 +330,8 @@ def test_record_approval_refuses_overwrite(tmp_path: Path) -> None:
             "scripts/record_line31_owner_publish_approval.py",
             "--approval-text-file",
             str(source),
+            "--approval-phrase-path",
+            str(APPROVAL_TEMPLATE),
             "--output",
             str(output),
             "--json",
@@ -342,10 +350,7 @@ def test_record_approval_function_requires_one_input(tmp_path: Path) -> None:
         approval_text_file = None
         from_stdin = False
         approval_phrase_path = APPROVAL_TEMPLATE
-        mapping = Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_asset_mapping_template.json"
-        )
+        mapping = Path("config/line31/final_creative_mapping_template.json")
         output_dir = tmp_path
         output = None
         overwrite = False

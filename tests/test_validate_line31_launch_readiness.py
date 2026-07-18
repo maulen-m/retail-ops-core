@@ -16,6 +16,8 @@ from scripts.validate_line31_launch_readiness import (
 )
 from scripts.validate_line31_final_creative_mapping import required_owner_approval_phrase
 
+SYNTHETIC_APPROVAL = Path("tests/fixtures/line31/SYNTHETIC_APPROVAL_PHRASE.txt")
+
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -28,12 +30,7 @@ def _write_closeout(root: Path, extra: str = "") -> None:
 
 
 def _write_approval_evidence(root: Path) -> Path:
-    phrase = required_owner_approval_phrase(
-        Path(
-            "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-            "final_creative_publish_intake_and_approval.md"
-        )
-    )
+    phrase = required_owner_approval_phrase(SYNTHETIC_APPROVAL)
     evidence = root / "owner_approval_evidence.md"
     evidence.write_text(
         f"# Owner Approval Evidence\n\nRecorded: 2026-06-01T16:00:00+05:00\n\n{phrase}\n",
@@ -110,6 +107,7 @@ def _write_publish_ready_mapping(root: Path, video_path: Path, thumb_path: Path)
     tracking_evidence = _write_tracking_qa_evidence(root)
     mapping = {
         "purpose": "LINE31 countrywide Meta launch final creative mapping intake template",
+        "source_gate": "RUNTIME_ASSET_MAPPING_PREPARED",
         "creative_ready_declaration_received": True,
         "internal_kaspi_line31_campaigns_policy": (
             "KEEP_ON_UNTIL_OWNER_CREATIVE_READY_DECLARATION_AND_SEPARATE_PAUSE_APPROVAL"
@@ -157,10 +155,7 @@ def _write_publish_ready_mapping(root: Path, video_path: Path, thumb_path: Path)
         ],
         "publish_authority": {
             "owner_approval_required": True,
-            "approval_phrase_path": (
-                "exports/validation/line31_goal_stock_dashboard_repair_20260601_133438/"
-                "final_creative_publish_intake_and_approval.md"
-            ),
+            "approval_phrase_path": str(SYNTHETIC_APPROVAL),
             "approved": True,
             "approval_evidence_path": str(approval_evidence),
             "approval_evidence_sha256": _sha(approval_evidence),
@@ -172,19 +167,24 @@ def _write_publish_ready_mapping(root: Path, video_path: Path, thumb_path: Path)
     )
 
 
-def test_current_line31_evidence_passes_when_pending_creative_is_allowed() -> None:
+def test_current_line31_evidence_reports_real_noncreative_blockers() -> None:
     result = validate_launch_readiness(
         DEFAULT_EVIDENCE_ROOT,
         allow_pending_creative=True,
     )
 
-    assert result.ok
-    assert result.gate == "GREEN_EXCEPT_CREATIVE"
+    assert not result.ok
+    assert result.gate == "YELLOW"
     assert result.metrics["creative_template_ok"] is True
     assert result.metrics["creative_strict_ok"] is False
-    assert result.metrics["current_noncreative_can_use_green_except_creative"] is True
-    assert result.metrics["current_noncreative_retained_blockers"] == []
-    assert result.errors == []
+    assert result.metrics["current_noncreative_can_use_green_except_creative"] is False
+    assert set(result.metrics["current_noncreative_retained_blockers"]) == {
+        "compact_child_cogs_integrity",
+        "profit_publication_integrity",
+        "generic_po_dashboard_stock_freshness_validator",
+    }
+    assert any("missing closeout" in error for error in result.errors)
+    assert any("current non-creative gate is not green-except-creative" in error for error in result.errors)
 
 
 def test_current_noncreative_matrix_blocks_pending_mode_when_yellow(tmp_path: Path) -> None:
@@ -298,12 +298,16 @@ def test_line31_launch_readiness_commands_do_not_mutate_protected_surfaces() -> 
         [
             sys.executable,
             "scripts/validate_line31_final_creative_mapping.py",
+            "--mapping",
+            "config/line31/final_creative_mapping_template.json",
             "--template-ok",
             "--json",
         ],
         [
             sys.executable,
             "scripts/validate_line31_final_creative_mapping.py",
+            "--mapping",
+            "config/line31/final_creative_mapping_template.json",
             "--json",
         ],
     ]
@@ -320,6 +324,6 @@ def test_line31_launch_readiness_commands_do_not_mutate_protected_surfaces() -> 
         returncodes.append(completed.returncode)
         assert completed.stdout.strip().startswith("{"), completed.stdout + completed.stderr
 
-    assert returncodes == [0, 1, 0, 1]
+    assert returncodes == [1, 1, 0, 1]
     after = {path: _sha(path) for path in protected}
     assert after == before

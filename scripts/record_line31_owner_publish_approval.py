@@ -24,11 +24,7 @@ from scripts.validate_line31_final_creative_mapping import (  # noqa: E402
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 DEFAULT_APPROVAL_PATH = (
-    PROJECT_ROOT
-    / "exports"
-    / "validation"
-    / "line31_goal_stock_dashboard_repair_20260601_133438"
-    / "final_creative_publish_intake_and_approval.md"
+    Path("/absolute/path/to/current_sha_bound_owner_approval_phrase.txt")
 )
 DEFAULT_OUTPUT_DIR = (
     PROJECT_ROOT
@@ -107,9 +103,9 @@ def _write_atomic(path: Path, text: str, *, overwrite: bool) -> None:
 
 
 def record_approval(args: argparse.Namespace) -> dict[str, object]:
+    input_text = _read_approval_text(args)
     approval_path = args.approval_phrase_path.expanduser().resolve()
     required_phrase = required_owner_approval_phrase(approval_path)
-    input_text = _read_approval_text(args)
     _validate_exact_phrase(input_text, required_phrase)
     mapping_ready_result: dict[str, object] | None = None
     if getattr(args, "require_mapping_ready", False):

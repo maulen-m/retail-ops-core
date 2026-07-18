@@ -1,6 +1,6 @@
 # LINE31 Kaspi `sku_id_ksp` to Inventory Mapping
 
-Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, sheet `SKU_Offer_Map_v2`, on 2026-04-04.
+Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, sheet `SKU_Offer_Map_v2`, on 2026-04-04 and read-only refreshed on 2026-07-16.
 
 `sku_id_ksp` is the main external offer-identity key used for LINE31 detection in Kaspi offer workflows. This document maps each live LINE31 Kaspi-facing SKU to our internal inventory identifiers exactly as prepared in the CRM workbook.
 
@@ -14,13 +14,13 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 ## Coverage Summary
 
-- Total LINE31 mappings: `72`
-- Package families: `ST` = `36`, `TRM` = `36`
+- Total LINE31 mappings: `84`
+- Package families: `ST` = `42`, `TRM` = `42`
 - Colors / variants covered: `Starry_Black`, `Cardamom_Green_Olive_Green`, `Espresso`, `Iris_Purple`, `Ivory`, `Ivory_White_Starry_Black`, `Misty_Blue`, `Whale_Blue`
 - Size coverage:
   - `Starry_Black`: `S, M, L, XL, 2XL, 3XL`
   - `Ivory_White_Starry_Black`: `S, M, L, XL, 2XL, 3XL`
-  - Final mono / duo colors: `M, L, XL, 2XL`
+  - Final mono / duo colors: `S, M, L, XL, 2XL`
 
 ## Sport Package (`ST`)
 
@@ -43,10 +43,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_ST_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_ST_CGOG_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_S` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_ST_S` |
 | `OF_LINE31_ST_CGOG_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_M` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_ST_M` |
 | `OF_LINE31_ST_CGOG_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_L` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_ST_L` |
 | `OF_LINE31_ST_CGOG_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_XL` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_ST_XL` |
@@ -56,10 +57,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_ST_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_ST_ESP_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_S` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_ST_S` |
 | `OF_LINE31_ST_ESP_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_M` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_ST_M` |
 | `OF_LINE31_ST_ESP_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_L` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_ST_L` |
 | `OF_LINE31_ST_ESP_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_XL` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_ST_XL` |
@@ -69,10 +71,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_ST_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_ST_IP_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_S` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_ST_S` |
 | `OF_LINE31_ST_IP_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_M` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_ST_M` |
 | `OF_LINE31_ST_IP_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_L` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_ST_L` |
 | `OF_LINE31_ST_IP_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_XL` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_ST_XL` |
@@ -82,10 +85,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_ST_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-011_IVORY`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_ST_IV_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_S` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_ST_S` |
 | `OF_LINE31_ST_IV_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_M` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_ST_M` |
 | `OF_LINE31_ST_IV_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_L` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_ST_L` |
 | `OF_LINE31_ST_IV_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_XL` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_ST_XL` |
@@ -110,10 +114,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_ST_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_ST_MB_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_S` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_ST_S` |
 | `OF_LINE31_ST_MB_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_M` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_ST_M` |
 | `OF_LINE31_ST_MB_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_L` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_ST_L` |
 | `OF_LINE31_ST_MB_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_XL` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_ST_XL` |
@@ -154,10 +159,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_TRM_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_TRM_CGOG_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_S` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_TRM_S` |
 | `OF_LINE31_TRM_CGOG_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_M` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_TRM_M` |
 | `OF_LINE31_TRM_CGOG_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_L` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_TRM_L` |
 | `OF_LINE31_TRM_CGOG_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_XL` | `CL_OF_ARC_WM_LINE31_B-C-005_CARDAMOM-GREEN_J-C-005_CARDAMOM-GREEN_L-C-015_OLIVE-GREEN_TRM_XL` |
@@ -167,10 +173,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_TRM_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_TRM_ESP_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_S` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_TRM_S` |
 | `OF_LINE31_TRM_ESP_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_M` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_TRM_M` |
 | `OF_LINE31_TRM_ESP_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_L` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_TRM_L` |
 | `OF_LINE31_TRM_ESP_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_XL` | `CL_OF_ARC_WM_LINE31_C-008_ESPRESSO_TRM_XL` |
@@ -180,10 +187,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_TRM_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_TRM_IP_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_S` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_TRM_S` |
 | `OF_LINE31_TRM_IP_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_M` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_TRM_M` |
 | `OF_LINE31_TRM_IP_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_L` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_TRM_L` |
 | `OF_LINE31_TRM_IP_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_XL` | `CL_OF_ARC_WM_LINE31_C-010_IRIS-PURPLE_TRM_XL` |
@@ -193,10 +201,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_TRM_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-011_IVORY`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_TRM_IV_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_S` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_TRM_S` |
 | `OF_LINE31_TRM_IV_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_M` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_TRM_M` |
 | `OF_LINE31_TRM_IV_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_L` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_TRM_L` |
 | `OF_LINE31_TRM_IV_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_XL` | `CL_OF_ARC_WM_LINE31_C-011_IVORY_TRM_XL` |
@@ -221,10 +230,11 @@ Generated from `~/Docs/Autonomous_business/excel_ui/SALES_KSP_CRM_V3.xlsx`, shee
 
 - Group token: `LINE31_TRM_FINAL`
 - Base `SKU_key`: `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE`
-- Sizes: `M, L, XL, 2XL`
+- Sizes: `S, M, L, XL, 2XL`
 
 | `sku_id_ksp` | Size | RUS | Normalized `SKU_ID` | `Merchant SKU` |
 |---|---:|---:|---|---|
+| `OF_LINE31_TRM_MB_S` | `S` | `44` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_S` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_TRM_S` |
 | `OF_LINE31_TRM_MB_M` | `M` | `46` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_M` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_TRM_M` |
 | `OF_LINE31_TRM_MB_L` | `L` | `48` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_L` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_TRM_L` |
 | `OF_LINE31_TRM_MB_XL` | `XL` | `50` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_XL` | `CL_OF_ARC_WM_LINE31_C-014_MISTY-BLUE_TRM_XL` |

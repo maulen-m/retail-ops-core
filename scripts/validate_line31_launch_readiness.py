@@ -41,6 +41,7 @@ DEFAULT_FALLBACK_NONCREATIVE_MATRIX = (
     / "final_synthesis"
     / "FINAL_GREEN_EXCEPT_CREATIVE_MATRIX.json"
 )
+DEFAULT_CURRENT_STATUS = PROJECT_ROOT / "docs" / "current" / "LINE31_LAUNCH_CURRENT_STATUS.json"
 READY_GATE = "Gate: GREEN_DRY_RUN_EOD_SUCCESS_WITH_DECLARED_WARNINGS"
 REQUIRED_CLOSEOUT_TOKENS = (
     "python3 scripts/validate_params.py --strict",
@@ -79,6 +80,21 @@ def _default_current_noncreative_matrix(evidence_root: Path) -> Path | None:
         if DEFAULT_FALLBACK_NONCREATIVE_MATRIX.exists():
             return DEFAULT_FALLBACK_NONCREATIVE_MATRIX
     return None
+
+
+def _current_mapping_for_evidence(evidence_root: Path, mapping_path: Path | None) -> Path:
+    if mapping_path is not None:
+        return mapping_path
+    local_mapping = evidence_root / DEFAULT_MAPPING.name
+    if not _same_path(evidence_root, DEFAULT_EVIDENCE_ROOT):
+        return local_mapping
+    try:
+        status = json.loads(DEFAULT_CURRENT_STATUS.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return local_mapping
+    raw = str(status.get("mapping_path") or "").strip() if isinstance(status, dict) else ""
+    current_mapping = Path(raw).expanduser() if raw else None
+    return current_mapping if current_mapping and current_mapping.is_file() else local_mapping
 
 
 def _validate_current_noncreative_matrix(matrix_path: Path) -> tuple[list[str], dict[str, Any]]:
@@ -127,7 +143,7 @@ def validate_launch_readiness(
     metrics: dict[str, Any] = {}
 
     closeout_path = evidence_root / "closeout.md"
-    mapping = mapping_path or evidence_root / DEFAULT_MAPPING.name
+    mapping = _current_mapping_for_evidence(evidence_root, mapping_path)
 
     if not closeout_path.exists():
         errors.append(f"missing closeout: {closeout_path}")
@@ -226,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         "warnings": result.warnings,
         "metrics": result.metrics,
         "evidence_root": str(args.evidence_root),
-        "mapping": str(args.mapping or args.evidence_root / DEFAULT_MAPPING.name),
+        "mapping": str(_current_mapping_for_evidence(args.evidence_root, args.mapping)),
     }
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
