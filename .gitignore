@@ -157,3 +157,6 @@ htmlcov/
 runtime/state/*.json
 runtime/state/*.bak
 runtime/locks/
+.claude/settings.local.json
+runs/git_hygiene_*/
+runs/ops_stoplines/
