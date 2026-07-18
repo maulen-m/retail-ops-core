@@ -27,3 +27,7 @@ Evidence:
 Operator rule:
 - Use the count sheets as expected-balance guides, not as count truth.
 - The production count anchor starts only after photo/OCR reconciliation and owner approval of the manifest.
+- Use `scripts/reconcile_manual_stock_count.py` for the durable reconciliation dry-run. Version 1 accepts one explicit `.approved.json` manifest and only exact single-SKU pools; shared/alias pools remain blocked until an owner-approved allocation exists.
+- A dry-run is read-only for the DB and emits cut-time arithmetic evidence. Blank canonical target identity, a missing `dim_sku` parent, or a blank DB `my_size` fails closed.
+- Production apply additionally requires the two write-enable environment gates, exact pre-write DB SHA, verified backup, and the exact current-date owner phrase emitted by `--print-required-owner-approval-phrase` in a SHA-locked instrument. The phrase binds the batch, manifest SHA, pre-DB SHA, exact tables/write set, and forbids snapshot rebuild.
+- An idempotent rerun accepts later post-count movements while preserving the original note arithmetic. A late pre-count movement hard-blocks the rerun. This lane never rebuilds the inventory snapshot.
