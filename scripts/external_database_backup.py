@@ -146,17 +146,22 @@ def create_snapshot(
         raise RuntimeError(f"Snapshot already exists: {paths.snapshot_dir}")
 
     excluded_items: list[str] = []
-    shutil.copytree(
-        source_root,
-        paths.snapshot_data_dir,
-        copy_function=shutil.copy2,
-        ignore=_build_ignore(
-            source_root=source_root,
-            exclude_dirs=exclude_dirs,
-            exclude_files=exclude_files,
-            excluded_items=excluded_items,
-        ),
-    )
+    try:
+        shutil.copytree(
+            source_root,
+            paths.snapshot_data_dir,
+            copy_function=shutil.copy2,
+            ignore=_build_ignore(
+                source_root=source_root,
+                exclude_dirs=exclude_dirs,
+                exclude_files=exclude_files,
+                excluded_items=excluded_items,
+            ),
+        )
+    except Exception:
+        # A copytree failure has no manifest and is never a usable snapshot.
+        shutil.rmtree(paths.snapshot_dir, ignore_errors=True)
+        raise
     file_count, bytes_total = dir_stats(paths.snapshot_data_dir)
 
     critical_missing: list[str] = []

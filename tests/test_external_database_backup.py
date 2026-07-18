@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+import scripts.external_database_backup as external_database_backup
 from scripts.external_database_backup import create_snapshot
 
 
@@ -104,3 +107,30 @@ def test_create_snapshot_always_excludes_by_order_even_with_custom_exclude_dirs(
     snapshot_data = backup_root / "snapshots" / manifest["snapshot_id"] / "External_database"
 
     assert not (snapshot_data / "Autonomous_business" / "kaspi_waybills" / "by_order").exists()
+
+
+def test_create_snapshot_removes_unmanifested_partial_after_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_root = tmp_path / "External_database"
+    kaspi_dir = source_root / "Kaspi_marketing"
+    kaspi_dir.mkdir(parents=True)
+    source_file = kaspi_dir / "sample.txt"
+    source_file.write_text("source remains authoritative", encoding="utf-8")
+
+    def fail_copy(*_args: object, **_kwargs: object) -> None:
+        raise OSError(11, "Resource deadlock avoided")
+
+    monkeypatch.setattr(external_database_backup.shutil, "copy2", fail_copy)
+    backup_root = tmp_path / "backup_root"
+
+    with pytest.raises(external_database_backup.shutil.Error):
+        create_snapshot(
+            source_root=source_root,
+            backup_root=backup_root,
+            keep_days=30,
+            critical_subdirs=["Kaspi_marketing"],
+        )
+
+    assert source_file.read_text(encoding="utf-8") == "source remains authoritative"
+    assert list((backup_root / "snapshots").iterdir()) == []
