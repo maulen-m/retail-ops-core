@@ -18,6 +18,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from dotenv import load_dotenv as _load_dotenv
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -26,6 +28,10 @@ from scripts.reconcile_on_delivery_settlement import find_settlement_gaps
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_EXPORT_DIR = PROJECT_ROOT / "exports" / "on_delivery_residuals"
+
+
+def load_repo_dotenv() -> None:
+    _load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 def _render_report(
@@ -117,6 +123,7 @@ def run_residual_check(
 
 
 def main() -> int:
+    load_repo_dotenv()
     parser = argparse.ArgumentParser(description="Dry-run residual check for on-delivery settlement gaps")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_EXPORT_DIR)

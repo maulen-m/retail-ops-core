@@ -649,10 +649,20 @@ def validate_shipped_truth_crm_waybill(
             if api_fetcher is None and crm_expected:
                 if store_code:
                     try:
-                        if store_code not in detail_clients:
+                        detail_candidates = sorted(
+                            order_id
+                            for order_id in (crm_expected - api_secondary)
+                            if not _within_shift_window(
+                                day,
+                                api_primary_day_map.get((store, order_id), set()),
+                                int(date_shift_tolerance_days),
+                            )
+                        )
+                        if detail_candidates and store_code not in detail_clients:
                             detail_clients[store_code] = KaspiAPIClient(store_code=store_code)
-                        detail_client = detail_clients[store_code]
-                        for order_id in sorted(crm_expected - api_secondary):
+                        detail_client = detail_clients.get(store_code)
+                        for order_id in detail_candidates:
+                            assert detail_client is not None
                             cache_key = (store_code, order_id)
                             if cache_key in detail_cache:
                                 ship_day, is_cancelled, has_waybill = detail_cache[cache_key]

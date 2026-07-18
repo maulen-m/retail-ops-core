@@ -10,7 +10,24 @@ import time
 
 import pytest
 
+from scripts import run_strict_daily_preflight
 from scripts.run_strict_daily_preflight import run_preflight
+
+
+def test_repo_dotenv_loader_uses_repo_file_without_overriding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    monkeypatch.setattr(run_strict_daily_preflight, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        run_strict_daily_preflight,
+        "_load_dotenv",
+        lambda path, override: calls.append((path, override)),
+    )
+
+    run_strict_daily_preflight.load_repo_dotenv()
+
+    assert calls == [(tmp_path / ".env", False)]
 
 
 def _seed_sqlite_db(path: Path) -> None:

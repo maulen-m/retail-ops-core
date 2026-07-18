@@ -17,7 +17,6 @@ import sys
 import time
 from typing import Callable, Sequence, Tuple
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_MAX_WORKBOOK_AGE_HOURS = 36.0
@@ -30,11 +29,23 @@ PROOF_WINDOW_BLOCK_TOKEN = "STRICT_DAILY_PREFLIGHT_BLOCKED_BY_PROOF_WINDOW_LOCK"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.db.validation_copy import validation_db_path
-
 # Optional dependency loaded lazily for bootstrap safety and test injection.
 build_single_truth_drift_pack: Callable[..., dict] | None = None
 send_run_failure_alert: Callable[..., bool] | None = None
+
+
+def _load_dotenv(path: Path, *, override: bool) -> bool:
+    # Keep third-party imports behind the repo-venv bootstrap.  This script is
+    # intentionally callable via /usr/bin/python3; __main__ re-execs into the
+    # repo interpreter before main() reaches this import.
+    from dotenv import load_dotenv
+
+    return bool(load_dotenv(path, override=override))
+
+
+def load_repo_dotenv() -> None:
+
+    _load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 def _resolve_reexec_target(
@@ -265,6 +276,11 @@ def run_preflight(
     business_insides_as_of: str | None = None,
     emit_drift_pack: bool = True,
 ) -> Tuple[int, str]:
+    # Import repo code only after __main__ has re-executed under the repo venv.
+    # The system Python used by LaunchAgent/bootstrap checks can be older than
+    # the syntax/runtime requirements of the application modules.
+    from core.db.validation_copy import validation_db_path
+
     proof_window_block = _proof_window_lock_block_status()
     if proof_window_block is not None:
         return proof_window_block
@@ -380,6 +396,7 @@ def run_preflight(
 
 
 def main() -> int:
+    load_repo_dotenv()
     parser = argparse.ArgumentParser(description="Run strict daily preflight with workbook-anchor enforcement")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="Database path")
     parser.add_argument("--workbook", type=Path, default=None, help="CRM workbook path (overrides env)")
