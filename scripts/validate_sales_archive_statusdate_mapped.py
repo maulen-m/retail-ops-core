@@ -35,6 +35,7 @@ REQUIRED_COLUMNS = {
     "gross_rev_kzt",
     "net_rev_kzt",
     "mapped_sku_key",
+    "mapped_sku_id",
     "mapped_size",
 }
 

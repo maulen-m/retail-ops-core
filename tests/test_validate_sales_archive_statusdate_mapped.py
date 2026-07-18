@@ -31,6 +31,7 @@ def _write_dataset(root: Path, *, since: str, until: str) -> None:
                 "gross_rev_kzt": "1000",
                 "net_rev_kzt": "1000",
                 "mapped_sku_key": "SKU_A",
+                "mapped_sku_id": "SKU_A_XL",
                 "mapped_size": "XL",
             },
             {
@@ -46,6 +47,7 @@ def _write_dataset(root: Path, *, since: str, until: str) -> None:
                 "gross_rev_kzt": "1000",
                 "net_rev_kzt": "0",
                 "mapped_sku_key": "SKU_B",
+                "mapped_sku_id": "SKU_B_M",
                 "mapped_size": "M",
             },
             {
@@ -61,6 +63,7 @@ def _write_dataset(root: Path, *, since: str, until: str) -> None:
                 "gross_rev_kzt": "1000",
                 "net_rev_kzt": "0",
                 "mapped_sku_key": "SKU_C",
+                "mapped_sku_id": "SKU_C_L",
                 "mapped_size": "L",
             },
             {
@@ -76,6 +79,7 @@ def _write_dataset(root: Path, *, since: str, until: str) -> None:
                 "gross_rev_kzt": "1000",
                 "net_rev_kzt": "0",
                 "mapped_sku_key": "SKU_D",
+                "mapped_sku_id": "SKU_D_S",
                 "mapped_size": "S",
             },
             {
@@ -91,6 +95,7 @@ def _write_dataset(root: Path, *, since: str, until: str) -> None:
                 "gross_rev_kzt": "1000",
                 "net_rev_kzt": "0",
                 "mapped_sku_key": "SKU_E",
+                "mapped_sku_id": "SKU_E_XL",
                 "mapped_size": "XL",
             },
         ]
@@ -112,6 +117,7 @@ def _write_dataset(root: Path, *, since: str, until: str) -> None:
             "gross_rev_kzt": "float",
             "net_rev_kzt": "float",
             "mapped_sku_key": "str",
+            "mapped_sku_id": "str",
             "mapped_size": "str",
         }
     }
@@ -127,6 +133,42 @@ def test_validate_sales_archive_statusdate_mapped_parser_default_cutover() -> No
     parser = _build_parser()
     args = parser.parse_args(["--since", "2025-06-06", "--until", "2026-03-04"])
     assert args.strict_statusdate_required_since == "2026-02-27"
+
+
+def test_validate_sales_archive_statusdate_mapped_requires_sku_id_column(
+    tmp_path: Path,
+) -> None:
+    since = "2026-02-01"
+    until = "2026-02-28"
+    data_root = tmp_path / "data"
+    _write_dataset(data_root, since=since, until=until)
+    range_dir = data_root / f"{since}_to_{until}"
+
+    csv_path = range_dir / "ArchiveSales_ALL_STORES_statusdate_mapped.csv"
+    frame = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    frame.drop(columns=["mapped_sku_id"]).to_csv(csv_path, index=False, encoding="utf-8")
+
+    schema_path = range_dir / "schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    del schema["columns"]["mapped_sku_id"]
+    schema_path.write_text(
+        json.dumps(schema, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    report = validate_sales_archive_statusdate_mapped(
+        since=date.fromisoformat(since),
+        until=date.fromisoformat(until),
+        data_root=data_root,
+        output_root=tmp_path / "out",
+        strict=False,
+        strict_statusdate_required_since=date(2026, 2, 27),
+        min_delivered_mapping_coverage=0.5,
+    )
+
+    assert report["status"] == "FAIL"
+    assert "csv missing required columns: mapped_sku_id" in report["errors"]
+    assert "schema missing required columns: mapped_sku_id" in report["errors"]
 
 
 def test_validate_sales_archive_statusdate_mapped_cutover_controls_fallback_gate(tmp_path: Path) -> None:
