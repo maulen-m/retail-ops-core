@@ -8,10 +8,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from core.db import get_db
-from core.integrations.kaspi_order_stage import (
-    StageCode,
-    classify_kaspi_stage_from_db_row,
-)
+from core.ops.expected_shipping_status import ExpectedShippingFacts, carryforward
 from core.utils.kaspi_dates import parse_kaspi_date
 
 
@@ -131,7 +128,7 @@ def get_overdue_waybill_ready_order_ids_from_db(
             """
         ).fetchall()
 
-    grouped: dict[tuple[str, str], dict[str, bool]] = {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         order_id = str(row["order_id"] or "").strip()
         if order_id.endswith(".0"):
@@ -145,54 +142,34 @@ def get_overdue_waybill_ready_order_ids_from_db(
         if store_filter_api and store_code != store_filter_api:
             continue
 
-        key = (store_code, order_id)
-        state = grouped.setdefault(
-            key,
+        grouped[(store_code, order_id)].append(
             {
-                "pending_handover": False,
-                "handed_over": False,
-                "signature_required": False,
-                "has_size": False,
-                "planned_in_window": False,
-                "waybill_ready": False,
-            },
+                **dict(row),
+                "store_code": store_code,
+                "order_id": order_id,
+            }
         )
 
-        stage = classify_kaspi_stage_from_db_row(row)
-        if stage == StageCode.ASSEMBLED_PENDING_HANDOVER:
-            state["pending_handover"] = True
-        if _is_handed_over(row["courier_transmission_date"]):
-            state["handed_over"] = True
-        if bool(int(row["signature_required"] or 0)):
-            state["signature_required"] = True
-        if not (_has_text(row["assigned_size"]) or _has_text(row["my_size"])):
-            pass
-        else:
-            state["has_size"] = True
-
-        planned_date = parse_kaspi_date(row["planned_shipment_date"])
-        if planned_date is not None and planned_date < target_date:
-            if min_date is None or planned_date >= min_date:
-                state["planned_in_window"] = True
-
-        waybill_ready = _has_text(row["waybill_url"]) or bool(int(row["waybill_downloaded"] or 0))
-        if waybill_ready:
-            state["waybill_ready"] = True
-
     results: dict[str, set[str]] = defaultdict(set)
-    for (store_code, order_id), state in grouped.items():
-        if state["handed_over"]:
+    for (store_code, order_id), order_rows in grouped.items():
+        planned_in_window = any(
+            planned_date is not None
+            and planned_date < target_date
+            and (min_date is None or planned_date >= min_date)
+            for planned_date in (
+                parse_kaspi_date(row["planned_shipment_date"])
+                for row in order_rows
+            )
+        )
+        if not planned_in_window:
             continue
-        if state["signature_required"]:
-            continue
-        if not state["pending_handover"]:
-            continue
-        if not state["has_size"]:
-            continue
-        if not state["planned_in_window"]:
-            continue
-        if not state["waybill_ready"]:
-            continue
-        results[store_code].add(order_id)
+        decision = carryforward.evaluate(
+            ExpectedShippingFacts.from_lines(
+                order_rows,
+                target_date=target_date,
+            )
+        )
+        if decision.projection:
+            results[decision.normalized_store].add(order_id)
 
     return dict(results)
