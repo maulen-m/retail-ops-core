@@ -137,6 +137,7 @@ def _add_validation(
 def _add_exception(
     exceptions: list[dict[str, Any]],
     *,
+    reason_counts: Counter[str] | None = None,
     run_id: str,
     domain: str,
     reason: str,
@@ -144,6 +145,8 @@ def _add_exception(
     evidence: dict[str, Any] | None = None,
     limit: int | None = None,
 ) -> None:
+    if reason_counts is not None:
+        reason_counts[reason] += 1
     if limit is not None and len(exceptions) >= limit:
         return
     exception_id = _sha256_text(
@@ -212,6 +215,7 @@ def _add_c3_foundation_validations(
     run_id: str,
     validation_results: list[dict[str, Any]],
     exceptions: list[dict[str, Any]],
+    exception_reason_counts: Counter[str],
     max_exception_items: int,
 ) -> int:
     added = 0
@@ -227,6 +231,7 @@ def _add_c3_foundation_validations(
         )
         _add_exception(
             exceptions,
+            reason_counts=exception_reason_counts,
             run_id=run_id,
             domain="c3_policy_registry",
             reason="C3_POLICY_REGISTRY_MISSING",
@@ -295,6 +300,7 @@ def _add_c3_foundation_validations(
             )
             _add_exception(
                 exceptions,
+                reason_counts=exception_reason_counts,
                 run_id=run_id,
                 domain=gate_name,
                 reason=reason,
@@ -763,6 +769,7 @@ def run_operational_stock_daily_truth(
 
     validation_results: list[dict[str, Any]] = []
     exceptions: list[dict[str, Any]] = []
+    exception_reason_counts: Counter[str] = Counter()
     source_manifests: list[dict[str, Any]] = []
     release_gates: list[dict[str, Any]] = []
     exception_count_total = 0
@@ -779,6 +786,7 @@ def run_operational_stock_daily_truth(
         )
         _add_exception(
             exceptions,
+            reason_counts=exception_reason_counts,
             run_id=run_id,
             domain="database",
             reason="DB_MISSING",
@@ -801,6 +809,7 @@ def run_operational_stock_daily_truth(
             for error in schema_errors:
                 _add_exception(
                     exceptions,
+                    reason_counts=exception_reason_counts,
                     run_id=run_id,
                     domain="schema",
                     reason="SCHEMA_CONTRACT_FAIL",
@@ -842,6 +851,7 @@ def run_operational_stock_daily_truth(
                 for issue in source_issues:
                     _add_exception(
                         exceptions,
+                        reason_counts=exception_reason_counts,
                         run_id=run_id,
                         domain="source_manifest",
                         reason=issue["reason"],
@@ -872,6 +882,7 @@ def run_operational_stock_daily_truth(
                 )
                 _add_exception(
                     exceptions,
+                    reason_counts=exception_reason_counts,
                     run_id=run_id,
                     domain="integration_gate",
                     reason="INTEGRATION_GATE_EXCEPTION",
@@ -896,6 +907,7 @@ def run_operational_stock_daily_truth(
                     for finding in integration_report.findings:
                         _add_exception(
                             exceptions,
+                            reason_counts=exception_reason_counts,
                             run_id=run_id,
                             domain="agent7_integration",
                             reason=finding.code,
@@ -921,6 +933,7 @@ def run_operational_stock_daily_truth(
                     run_id=run_id,
                     validation_results=validation_results,
                     exceptions=exceptions,
+                    exception_reason_counts=exception_reason_counts,
                     max_exception_items=max_exception_items,
                 )
 
@@ -959,6 +972,7 @@ def run_operational_stock_daily_truth(
         )
         _add_exception(
             exceptions,
+            reason_counts=exception_reason_counts,
             run_id=run_id,
             domain="release_gate",
             reason="GREEN_PUBLICATION_NOT_AUTHORIZED",
@@ -980,7 +994,13 @@ def run_operational_stock_daily_truth(
     status = "RED" if blocking_results else "GREEN"
     owner_trust_status = "GREEN_DECISION_GRADE" if status == "GREEN" else "RED_BLOCKED"
 
-    exception_counts = Counter(item["reason"] for item in exceptions)
+    counted_exception_total = sum(exception_reason_counts.values())
+    if counted_exception_total != exception_count_total:
+        raise RuntimeError(
+            "exception reason counts do not match exception_count_total: "
+            f"{counted_exception_total} != {exception_count_total}"
+        )
+    exception_counts = exception_reason_counts
     lineage_path = output_dir / "run_lineage.json"
     exception_json_path = output_dir / "exception_report.json"
     exception_md_path = output_dir / "exception_report.md"

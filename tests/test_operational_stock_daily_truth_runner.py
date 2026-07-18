@@ -223,3 +223,28 @@ def test_red_owner_brief_fixture_preserves_agent7_blockers(tmp_path: Path) -> No
     assert "ORDER_LIFECYCLE_MISSING_COMPLETED" in brief
     assert "Owner publication is blocked" in brief
     assert "No green release has been published" in brief
+
+
+def test_exception_reason_counts_cover_full_set_when_samples_are_capped(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    _seed_minimal_green_sources(db_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("DELETE FROM order_status_event WHERE order_id = 'O1'")
+        conn.execute("DELETE FROM fact_order_entries_kaspi WHERE order_id = 'O1'")
+        conn.commit()
+
+    report = run_operational_stock_daily_truth(
+        db_path=db_path,
+        as_of="2026-05-03",
+        output_root=tmp_path / "daily_truth",
+        run_id="fixture-capped-exceptions",
+        allow_green_owner_output=True,
+        max_exception_items=1,
+    )
+    payload = json.loads(Path(report.exception_report_json_path).read_text(encoding="utf-8"))
+
+    assert len(payload["exceptions"]) == 1
+    assert payload["exception_count_total"] > len(payload["exceptions"])
+    assert sum(payload["exception_counts_by_reason"].values()) == payload["exception_count_total"]
+    assert payload["exception_counts_by_reason"]["ORDER_ENTRY_MISSING"] == 1
+    assert payload["exception_counts_by_reason"]["ORDER_LIFECYCLE_MISSING_COMPLETED"] == 1
