@@ -785,12 +785,92 @@ def test_ensure_prewindow_health_publish_profile_skips_whatsapp_and_store_contex
 
     assert report["ok"] is True
     assert report["profile"] == health_mod.HEALTH_PROFILE_PUBLISH
-    assert report["report_path"].endswith("publish_health.json")
+    report_path = Path(report["report_path"])
+    latest_path = Path(report["latest_report_path"])
+    assert report_path.parent.name == "publish_health_runs"
+    assert report_path.name.startswith("publish_health_")
+    assert latest_path.name == "publish_health.json"
+    assert latest_path.is_symlink()
+    assert latest_path.resolve() == report_path.resolve()
     assert report["identity_sync_reused"] is False
     assert report["checks"]["identity_sync"]["skipped"] is True
     assert report["checks"]["identity_sync"]["reason"] == "profile=publish excludes identity_sync"
     assert report["checks"]["store_context"]["skipped"] is True
     assert report["checks"]["whatsapp_smoke"]["skipped"] is True
+
+
+def test_health_reports_are_run_scoped_and_latest_pointer_preserves_prior_run(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    contract = load_ops_board_contract()
+    db_path = tmp_path / "app.db"
+    db_path.write_bytes(b"sqlite")
+    workbook = tmp_path / "crm.xlsx"
+    workbook.write_bytes(b"unused")
+    monkeypatch.setattr(health_mod, "validate_local_db", lambda _path: [])
+    monkeypatch.setattr(
+        health_mod.GoogleOpsBoardClient,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: _FakeClient(contract),
+    )
+    monkeypatch.setattr(health_mod, "_build_google_layout_report", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(health_mod, "send_owner_ops_alert", lambda **_kwargs: True)
+
+    common = {
+        "target_date": health_mod.date(2026, 7, 18),
+        "db_path": db_path,
+        "contract_path": health_mod.DEFAULT_CONTRACT_PATH,
+        "service_account_json": tmp_path / "svc.json",
+        "spreadsheet_id": "sheet-id",
+        "output_root": tmp_path / "health",
+        "workbook_path": workbook,
+        "profile": health_mod.HEALTH_PROFILE_PUBLISH,
+    }
+    first = health_mod.ensure_prewindow_health(**common, reason="first")
+    second = health_mod.ensure_prewindow_health(**common, reason="second")
+
+    first_path = Path(first["report_path"])
+    second_path = Path(second["report_path"])
+    latest_path = Path(second["latest_report_path"])
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
+    assert latest_path.is_symlink()
+    assert latest_path.resolve() == second_path.resolve()
+    assert first_path.read_text(encoding="utf-8") != second_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("profile", "latest_name", "runs_dir"),
+    [
+        ("full", "prewindow_health.json", "prewindow_health_runs"),
+        ("publish", "publish_health.json", "publish_health_runs"),
+        ("closeout", "closeout_health.json", "closeout_health_runs"),
+    ],
+)
+def test_health_profile_paths_keep_legacy_latest_and_add_run_scope(
+    tmp_path: Path,
+    profile: str,
+    latest_name: str,
+    runs_dir: str,
+) -> None:
+    target = health_mod.date(2026, 7, 18)
+    latest = health_mod.resolve_prewindow_health_report_path(
+        target,
+        tmp_path,
+        profile=profile,
+    )
+    run_report = health_mod.resolve_prewindow_health_run_report_path(
+        target,
+        "run:one",
+        tmp_path,
+        profile=profile,
+    )
+
+    assert latest == tmp_path / "2026-07-18" / latest_name
+    assert run_report.parent == tmp_path / "2026-07-18" / runs_dir
+    assert run_report.name.endswith("run_one.json")
 
 
 def test_ensure_prewindow_health_closeout_profile_skips_whatsapp_when_telegram_is_green(

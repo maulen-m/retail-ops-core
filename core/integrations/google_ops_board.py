@@ -141,6 +141,12 @@ def _clean_key(value: Any) -> str:
     return text
 
 
+def _sheet_input_value(value: Any) -> Any:
+    # The values API skips JSON null instead of clearing the destination cell.
+    # Canonical blank values must therefore be explicit empty strings.
+    return "" if value is None else value
+
+
 def _column_letter(column_number: int) -> str:
     if column_number < 1:
         raise ValueError(f"Column number must be >= 1, got {column_number}")
@@ -430,7 +436,7 @@ def build_tab_reorder_requests(
 def rows_to_matrix(headers: list[str], rows: list[dict[str, Any]]) -> list[list[Any]]:
     matrix: list[list[Any]] = [headers]
     for row in rows:
-        matrix.append([row.get(header, "") for header in headers])
+        matrix.append([_sheet_input_value(row.get(header, "")) for header in headers])
     return matrix
 
 
@@ -562,6 +568,8 @@ class GoogleOpsBoardClient:
         self.spreadsheet_id = spreadsheet_id
         self.session = session
         self._tab_value_extents: dict[str, tuple[int, int]] = {}
+        self._tab_grid_extents: dict[str, tuple[int, int]] = {}
+        self._sheet_id_by_title: dict[str, int] = {}
 
     @classmethod
     def from_service_account_file(cls, spreadsheet_id: str, service_account_json: Path) -> "GoogleOpsBoardClient":
@@ -579,7 +587,20 @@ class GoogleOpsBoardClient:
             f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}"
             "?fields=sheets(properties(sheetId,title,index,gridProperties(rowCount,columnCount)))"
         )
-        return self._request("GET", url).json()
+        metadata = self._request("GET", url).json()
+        for sheet in metadata.get("sheets", []):
+            properties = sheet.get("properties") or {}
+            title = str(properties.get("title") or "")
+            if not title:
+                continue
+            if properties.get("sheetId") is not None:
+                self._sheet_id_by_title[title] = int(properties["sheetId"])
+            grid = properties.get("gridProperties") or {}
+            self._tab_grid_extents[title] = (
+                int(grid.get("rowCount") or 0),
+                int(grid.get("columnCount") or 0),
+            )
+        return metadata
 
     def get_ui_metadata(self) -> dict[str, Any]:
         url = (
@@ -594,11 +615,8 @@ class GoogleOpsBoardClient:
         return [sheet["properties"]["title"] for sheet in meta.get("sheets", [])]
 
     def get_sheet_id_map(self) -> dict[str, int]:
-        meta = self.get_metadata()
-        return {
-            str(sheet["properties"]["title"]): int(sheet["properties"]["sheetId"])
-            for sheet in meta.get("sheets", [])
-        }
+        self.get_metadata()
+        return dict(self._sheet_id_by_title)
 
     def batch_update(self, requests: list[dict[str, Any]]) -> dict[str, Any]:
         if not requests:
@@ -661,6 +679,12 @@ class GoogleOpsBoardClient:
         self._request("PUT", url, json=body)
 
     def overwrite_tab_rows(self, tab_name: str, rows: list[list[Any]]) -> None:
+        """Replace tab values atomically while retaining formatting and validation.
+
+        UpdateCells clears userEnteredValue for every uncovered cell inside the
+        explicit union range. This avoids values.update's null-skip behavior and
+        does not depend on trailing empty rows/cells surviving a values read.
+        """
         previous_extent = self._tab_value_extents.get(tab_name)
         if previous_extent is None:
             self.get_tab_values(tab_name)
@@ -668,29 +692,42 @@ class GoogleOpsBoardClient:
 
         new_row_count = len(rows)
         new_column_count = max((len(row) for row in rows), default=0)
-        union_row_count = max(previous_extent[0], new_row_count, 1)
-        union_column_count = max(previous_extent[1], new_column_count, 1)
-        padded_rows = [
-            list(row) + [""] * (union_column_count - len(row))
-            for row in rows
-        ]
-        padded_rows.extend(
-            [[""] * union_column_count for _ in range(union_row_count - len(padded_rows))]
-        )
+        grid_extent = self._tab_grid_extents.get(tab_name, (0, 0))
+        union_row_count = max(previous_extent[0], grid_extent[0], new_row_count, 1)
+        union_column_count = max(previous_extent[1], grid_extent[1], new_column_count, 1)
 
-        range_tail = _column_letter(union_column_count)
-        update_range = f"{tab_name}!A1:{range_tail}{union_row_count}"
-        encoded_range = quote(update_range)
-        url = (
-            f"https://sheets.googleapis.com/v4/spreadsheets/{self.spreadsheet_id}/values/{encoded_range}"
-            "?valueInputOption=RAW"
-        )
-        body = {
-            "range": update_range,
-            "majorDimension": "ROWS",
-            "values": padded_rows,
+        sheet_id = self._sheet_id_by_title.get(tab_name)
+        if sheet_id is None:
+            sheet_id = self.get_sheet_id_map().get(tab_name)
+        if sheet_id is None:
+            raise RuntimeError(f"Google Sheets metadata is missing tab: {tab_name}")
+
+        def user_entered_value(value: Any) -> dict[str, Any]:
+            if value is None or value == "":
+                return {}
+            if isinstance(value, bool):
+                return {"userEnteredValue": {"boolValue": value}}
+            if isinstance(value, (int, float)):
+                return {"userEnteredValue": {"numberValue": value}}
+            return {"userEnteredValue": {"stringValue": str(value)}}
+
+        update_request = {
+            "updateCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": union_row_count,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": union_column_count,
+                },
+                "rows": [
+                    {"values": [user_entered_value(value) for value in row]}
+                    for row in rows
+                ],
+                "fields": "userEnteredValue",
+            }
         }
-        self._request("PUT", url, json=body)
+        self.batch_update([update_request])
         self._tab_value_extents[tab_name] = (new_row_count, new_column_count)
 
     def append_tab_rows(self, tab_name: str, headers: list[str], rows: list[dict[str, Any]]) -> None:
@@ -704,7 +741,10 @@ class GoogleOpsBoardClient:
         body = {
             "range": f"{tab_name}!A1",
             "majorDimension": "ROWS",
-            "values": [[row.get(header, "") for header in headers] for row in rows],
+            "values": [
+                [_sheet_input_value(row.get(header, "")) for header in headers]
+                for row in rows
+            ],
         }
         self._request("POST", url, json=body)
 
@@ -721,7 +761,9 @@ class GoogleOpsBoardClient:
                 {
                     "range": f"{tab_name}!A{sheet_row}:{range_tail}{sheet_row}",
                     "majorDimension": "ROWS",
-                    "values": [[row.get(header, "") for header in headers]],
+                    "values": [
+                        [_sheet_input_value(row.get(header, "")) for header in headers]
+                    ],
                 }
             )
         url = (
@@ -739,7 +781,7 @@ class GoogleOpsBoardClient:
                 {
                     "range": str(update["range"]),
                     "majorDimension": "ROWS",
-                    "values": [[update.get("value", "")]],
+                    "values": [[_sheet_input_value(update.get("value", ""))]],
                 }
             )
         url = (

@@ -2631,6 +2631,7 @@ def test_failed_shipping_pass_leaves_no_same_day_obligation_and_board_status_tod
     report = json.loads((tmp_path / "closeout_report.json").read_text(encoding="utf-8"))
     assert rc == 1
     assert seen_health["profile"] == "closeout"
+    assert seen_health["run_id"] == report["run_id"]
     assert report["failure_stage"] == "shipping"
     assert client.get_tab_values("Run_Control")[1][1] == "READY"
     assert client.get_tab_values("Run_Control")[1][-1] == "FAILED_SHIPPING"

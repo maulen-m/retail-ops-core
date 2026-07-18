@@ -6,6 +6,7 @@ from datetime import date
 import hashlib
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile
@@ -40,6 +41,7 @@ from scripts.google_ops_board_automation_common import (  # noqa: E402
     load_json_file,
     now_almaty,
     resolve_prewindow_health_report_path,
+    resolve_prewindow_health_run_report_path,
     today_almaty,
 )
 from scripts.import_kaspi_article_map_from_crm import (  # noqa: E402
@@ -188,6 +190,27 @@ def _load_same_day_successful_identity_sync(
         reused_identity["reuse_reason"] = "same_day_identity_sync_artifact_after_workbook_read_failure"
         return reused_identity
     return None
+
+
+def _new_health_run_id(*, profile: str, started_at) -> str:
+    return (
+        f"{profile}_{started_at.strftime('%Y%m%dT%H%M%S_%f%z')}_"
+        f"{uuid.uuid4().hex[:8]}"
+    )
+
+
+def _replace_latest_health_pointer(*, latest_path: Path, report_path: Path) -> None:
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = latest_path.with_name(
+        f".{latest_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    relative_target = os.path.relpath(report_path, start=latest_path.parent)
+    try:
+        temporary.symlink_to(relative_target)
+        os.replace(temporary, latest_path)
+    finally:
+        if temporary.is_symlink() or temporary.exists():
+            temporary.unlink()
 
 
 def _build_google_layout_report(*, client: GoogleOpsBoardClient, contract) -> dict[str, Any]:
@@ -677,6 +700,7 @@ def ensure_prewindow_health(
     profile: str = HEALTH_PROFILE_FULL,
     require_live_board_parity: bool | None = None,
     emit_alerts: bool = True,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     _load_repo_dotenv()
     ledger_env = os.environ
@@ -690,8 +714,23 @@ def ensure_prewindow_health(
     profile_checks = HEALTH_PROFILE_CHECKS[resolved_profile]
     if profile_checks["identity_sync"]:
         _require_apply_gate(apply)
-    report_path = resolve_prewindow_health_report_path(target_date, output_root, profile=resolved_profile)
-    previous_report = load_json_file(report_path)
+    started_at = now_almaty()
+    resolved_run_id = str(run_id or "").strip() or _new_health_run_id(
+        profile=resolved_profile,
+        started_at=started_at,
+    )
+    latest_report_path = resolve_prewindow_health_report_path(
+        target_date,
+        output_root,
+        profile=resolved_profile,
+    )
+    report_path = resolve_prewindow_health_run_report_path(
+        target_date,
+        resolved_run_id,
+        output_root,
+        profile=resolved_profile,
+    )
+    previous_report = load_json_file(latest_report_path)
     workbook = Path(workbook_path or _resolve_workbook_path()).expanduser()
     if profile_checks["identity_sync"]:
         fingerprint = build_workbook_fingerprint(workbook)
@@ -719,11 +758,13 @@ def ensure_prewindow_health(
         "target_date": target_date.isoformat(),
         "reason": reason,
         "profile": resolved_profile,
+        "run_id": resolved_run_id,
         "mode": "apply" if apply else "dry_run",
         "report_path": str(report_path),
+        "latest_report_path": str(latest_report_path),
         "workbook_path": str(workbook.resolve()),
         "workbook_fingerprint": fingerprint,
-        "ran_at": now_almaty().isoformat(),
+        "ran_at": started_at.isoformat(),
         "identity_sync_reused": reuse_identity_sync,
         "runtime_code_fingerprints": _runtime_code_fingerprints(),
         "ok": False,
@@ -760,7 +801,7 @@ def ensure_prewindow_health(
                 same_day_identity_sync = _load_same_day_successful_identity_sync(
                     target_date=target_date,
                     output_root=Path(output_root).expanduser(),
-                    current_report_path=report_path,
+                    current_report_path=latest_report_path,
                     require_apply=apply,
                 )
             if same_day_identity_sync:
@@ -861,6 +902,10 @@ def ensure_prewindow_health(
     )
     _update_health_alert_state(report, previous_report)
     dump_json(report_path, report)
+    _replace_latest_health_pointer(
+        latest_path=latest_report_path,
+        report_path=report_path,
+    )
     if emit_alerts:
         _send_health_alert(report, previous_report)
     return report
@@ -878,6 +923,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stores-config", type=Path, default=DEFAULT_KASPI_STORES_CONFIG)
     parser.add_argument("--reason", type=str, default="manual")
     parser.add_argument("--profile", choices=HEALTH_PROFILE_CHOICES, default=HEALTH_PROFILE_FULL)
+    parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--json-out", type=Path, default=None)
@@ -903,6 +949,7 @@ def main(argv: list[str] | None = None) -> int:
         verbose=args.verbose,
         force=args.force,
         profile=args.profile,
+        run_id=args.run_id,
     )
     if args.json_out:
         dump_json(args.json_out, report)

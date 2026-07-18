@@ -2488,6 +2488,7 @@ def _run_closeout(args: argparse.Namespace) -> int:
             apply=True,
             reason="closeout_apply",
             profile="closeout",
+            run_id=run_id,
         )
         report["prewindow_health_report_path"] = str(health.get("report_path") or "")
         if not health.get("ok"):

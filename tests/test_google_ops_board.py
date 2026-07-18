@@ -2752,27 +2752,79 @@ def test_google_ops_board_full_tab_write_clears_existing_values_first():
 
 
 @pytest.mark.parametrize(
-    ("previous_values", "new_values", "expected_range", "expected_values"),
+    ("previous_values", "new_values", "expected_range", "expected_rows"),
     [
         (
             [["old-a", "old-b", "old-c", "old-d"], ["1", "2"], ["3"]],
             [["new-a", "new-b"], ["4", "5"]],
-            "SalesRaw_Today!A1:D3",
-            [["new-a", "new-b", "", ""], ["4", "5", "", ""], ["", "", "", ""]],
+            {
+                "sheetId": 17,
+                "startRowIndex": 0,
+                "endRowIndex": 3,
+                "startColumnIndex": 0,
+                "endColumnIndex": 4,
+            },
+            [
+                {
+                    "values": [
+                        {"userEnteredValue": {"stringValue": "new-a"}},
+                        {"userEnteredValue": {"stringValue": "new-b"}},
+                    ]
+                },
+                {
+                    "values": [
+                        {"userEnteredValue": {"stringValue": "4"}},
+                        {"userEnteredValue": {"stringValue": "5"}},
+                    ]
+                },
+            ],
         ),
         (
             [["old-a"], ["1"], ["2"], ["3"]],
-            [["new-a", "new-b", "new-c"], ["4", "5", "6"]],
-            "SalesRaw_Today!A1:C4",
-            [["new-a", "new-b", "new-c"], ["4", "5", "6"], ["", "", ""], ["", "", ""]],
+            [["new-a", "new-b", "new-c"], [4, True, None]],
+            {
+                "sheetId": 17,
+                "startRowIndex": 0,
+                "endRowIndex": 4,
+                "startColumnIndex": 0,
+                "endColumnIndex": 3,
+            },
+            [
+                {
+                    "values": [
+                        {"userEnteredValue": {"stringValue": "new-a"}},
+                        {"userEnteredValue": {"stringValue": "new-b"}},
+                        {"userEnteredValue": {"stringValue": "new-c"}},
+                    ]
+                },
+                {
+                    "values": [
+                        {"userEnteredValue": {"numberValue": 4}},
+                        {"userEnteredValue": {"boolValue": True}},
+                        {},
+                    ]
+                },
+            ],
+        ),
+        (
+            [["old-a", "old-b"], ["1", "2"]],
+            [],
+            {
+                "sheetId": 17,
+                "startRowIndex": 0,
+                "endRowIndex": 2,
+                "startColumnIndex": 0,
+                "endColumnIndex": 2,
+            },
+            [],
         ),
     ],
 )
-def test_google_ops_board_atomic_overwrite_uses_one_union_extent_update(
+def test_google_ops_board_atomic_overwrite_uses_one_union_extent_update_cells(
     previous_values,
     new_values,
     expected_range,
-    expected_values,
+    expected_rows,
 ):
     class FakeResponse:
         status_code = 200
@@ -2790,26 +2842,317 @@ def test_google_ops_board_atomic_overwrite_uses_one_union_extent_update(
 
         def request(self, method, url, **kwargs):
             self.calls.append((method, url, kwargs))
-            if method == "GET":
+            if method == "GET" and "/values/" in url:
                 return FakeResponse({"values": previous_values})
             return FakeResponse({})
 
     session = FakeSession()
     client = GoogleOpsBoardClient("sheet-id", session)
+    client._sheet_id_by_title = {"SalesRaw_Today": 17}
 
     client.overwrite_tab_rows("SalesRaw_Today", new_values)
 
-    assert [call[0] for call in session.calls] == ["GET", "PUT"]
+    assert [call[0] for call in session.calls] == ["GET", "POST"]
     update_call = session.calls[1]
     assert ":clear" not in update_call[1]
-    assert update_call[1].endswith(
-        f"/values/{expected_range.replace('!', '%21').replace(':', '%3A')}?valueInputOption=RAW"
-    )
+    assert update_call[1].endswith("/spreadsheets/sheet-id:batchUpdate")
     assert update_call[2]["json"] == {
-        "range": expected_range,
-        "majorDimension": "ROWS",
-        "values": expected_values,
+        "requests": [
+            {
+                "updateCells": {
+                    "range": expected_range,
+                    "rows": expected_rows,
+                    "fields": "userEnteredValue",
+                }
+            }
+        ]
     }
+
+
+def test_google_ops_board_atomic_overwrite_prefers_cached_grid_extent() -> None:
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if method == "GET" and "/values/" in url:
+                return FakeResponse({"values": [["old"], ["value"]]})
+            if method == "GET":
+                return FakeResponse(
+                    {
+                        "sheets": [
+                            {
+                                "properties": {
+                                    "sheetId": 17,
+                                    "title": "SalesRaw_Today",
+                                    "gridProperties": {
+                                        "rowCount": 2000,
+                                        "columnCount": 26,
+                                    },
+                                }
+                            }
+                        ]
+                    }
+                )
+            return FakeResponse({})
+
+    session = FakeSession()
+    client = GoogleOpsBoardClient("sheet-id", session)
+    client.get_metadata()
+    client.overwrite_tab_rows("SalesRaw_Today", [["new"]])
+
+    request_range = session.calls[-1][2]["json"]["requests"][0]["updateCells"]["range"]
+    assert request_range == {
+        "sheetId": 17,
+        "startRowIndex": 0,
+        "endRowIndex": 2000,
+        "startColumnIndex": 0,
+        "endColumnIndex": 26,
+    }
+
+
+def test_google_ops_board_legacy_values_update_skips_null_but_update_cells_clears_it():
+    """Reproduce the old readback mismatch using Sheets' documented null semantics."""
+
+    previous = [["key", "optional"], ["row-1", "stale"]]
+    replacement = [["key", "optional"], ["row-1", None]]
+
+    def values_update_readback() -> list[list[object]]:
+        stored = [list(row) for row in previous]
+        for row_index, row in enumerate(replacement):
+            for column_index, value in enumerate(row):
+                if value is not None:  # Sheets values.update skips JSON null.
+                    stored[row_index][column_index] = value
+        return stored
+
+    def update_cells_readback() -> list[list[object]]:
+        stored = [list(row) for row in previous]
+        for row_index, row in enumerate(replacement):
+            for column_index, value in enumerate(row):
+                stored[row_index][column_index] = "" if value is None else value
+        return stored
+
+    expected_rows = [{"key": "row-1", "optional": ""}]
+    legacy_rows = extract_rows_from_matrix(["key", "optional"], values_update_readback())
+    fixed_rows = extract_rows_from_matrix(["key", "optional"], update_cells_readback())
+
+    assert legacy_rows != expected_rows
+    assert legacy_rows[0]["optional"] == "stale"
+    assert fixed_rows == expected_rows
+
+
+def test_google_ops_board_atomic_mixed_nine_tab_publish_matches_trimmed_readback(
+    monkeypatch,
+) -> None:
+    """Golden the 2026-07-18 mixed shape without making a Sheets call."""
+
+    contract = load_ops_board_contract()
+    sheet_ids = {name: index + 100 for index, name in enumerate(contract.tabs)}
+
+    def make_rows(tab_name: str, count: int, marker: str) -> list[dict[str, object]]:
+        headers = contract.tabs[tab_name].headers
+        rows: list[dict[str, object]] = []
+        for index in range(count):
+            row = {
+                header: f"{marker}-{tab_name}-{index}-{column}"
+                for column, header in enumerate(headers)
+            }
+            row[contract.tabs[tab_name].key_column] = f"{marker}-{tab_name}-{index}"
+            if tab_name == "Run_Control":
+                row["target_date"] = "2026-07-18"
+            rows.append(row)
+        return rows
+
+    initial_rows = {
+        "SalesRaw_Today": make_rows("SalesRaw_Today", 28, "old"),
+        "Run_Control": make_rows("Run_Control", 1, "old"),
+        "README": make_rows("README", 9, "old"),
+        "Orders_Today": make_rows("Orders_Today", 28, "old"),
+        "Needs_Size": make_rows("Needs_Size", 21, "old"),
+        "Shipping_Queue": make_rows("Shipping_Queue", 7, "old"),
+        "Exceptions": make_rows("Exceptions", 21, "old"),
+        "Shipped_Today": [],
+        "Config_Do_Not_Edit": make_rows("Config_Do_Not_Edit", 7, "stable"),
+    }
+    expected_rows = {
+        "SalesRaw_Today": make_rows("SalesRaw_Today", 28, "new"),
+        "Run_Control": initial_rows["Run_Control"],
+        "README": make_rows("README", 9, "new"),
+        "Orders_Today": make_rows("Orders_Today", 28, "new"),
+        "Needs_Size": [],
+        "Shipping_Queue": make_rows("Shipping_Queue", 28, "new"),
+        "Exceptions": [],
+        "Shipped_Today": [],
+        "Config_Do_Not_Edit": initial_rows["Config_Do_Not_Edit"],
+    }
+    initial_rows["SalesRaw_Today"][0]["WEIGHT"] = "stale-value"
+    expected_rows["SalesRaw_Today"][0]["WEIGHT"] = None
+    stored = {
+        name: rows_to_matrix(contract.tabs[name].headers, rows)
+        for name, rows in initial_rows.items()
+    }
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload=None):
+            self.payload = payload or {}
+
+        def json(self):
+            return self.payload
+
+    class FakeSheetsSession:
+        def __init__(self):
+            self.calls = []
+            self.id_to_name = {sheet_id: name for name, sheet_id in sheet_ids.items()}
+
+        @staticmethod
+        def _cell_value(cell):
+            value = cell.get("userEnteredValue") or {}
+            for key in ("stringValue", "numberValue", "boolValue"):
+                if key in value:
+                    return value[key]
+            return ""
+
+        @staticmethod
+        def values_get(tab_name):
+            values = [list(row) for row in stored[tab_name]]
+            for row in values:
+                while row and row[-1] in ("", None):
+                    row.pop()
+            while values and not values[-1]:
+                values.pop()
+            return values
+
+        def _apply_update_cells(self, payload):
+            update = payload["requests"][0]["updateCells"]
+            grid_range = update["range"]
+            tab_name = self.id_to_name[grid_range["sheetId"]]
+            row_count = grid_range["endRowIndex"]
+            column_count = grid_range["endColumnIndex"]
+            matrix = [[""] * column_count for _ in range(row_count)]
+            for row_index, row_data in enumerate(update["rows"]):
+                for column_index, cell in enumerate(row_data.get("values") or []):
+                    matrix[row_index][column_index] = self._cell_value(cell)
+            stored[tab_name] = matrix
+
+        def _apply_values_batch_update(self, payload):
+            for update in payload["data"]:
+                tab_range = update["range"]
+                tab_name, cells = tab_range.split("!", 1)
+                row_number = int(cells.split(":", 1)[0][1:])
+                values = list(update["values"][0])
+                width = max(len(stored[tab_name][0]), len(values))
+                while len(stored[tab_name]) < row_number:
+                    stored[tab_name].append([""] * width)
+                stored[tab_name][row_number - 1] = values + [""] * (width - len(values))
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if method == "POST" and url.endswith(":batchUpdate"):
+                self._apply_update_cells(kwargs["json"])
+            elif method == "POST" and "/values:batchUpdate" in url:
+                self._apply_values_batch_update(kwargs["json"])
+            return FakeResponse()
+
+    session = FakeSheetsSession()
+    client = GoogleOpsBoardClient("sheet-id", session)
+    client._sheet_id_by_title = dict(sheet_ids)
+    client._tab_value_extents = {
+        name: (len(matrix), max((len(row) for row in matrix), default=0))
+        for name, matrix in stored.items()
+    }
+    monkeypatch.setenv("AB_ATOMIC_BOARD_PUBLISH", "1")
+
+    def comparator_rows(rows):
+        return [
+            {
+                header: "" if row.get(header) is None else row.get(header, "")
+                for header in contract.tabs["SalesRaw_Today"].headers
+            }
+            for row in rows
+        ]
+
+    sales_headers = contract.tabs["SalesRaw_Today"].headers
+    legacy_sales_matrix = [list(row) for row in stored["SalesRaw_Today"]]
+    for row_index, expected in enumerate(expected_rows["SalesRaw_Today"], start=1):
+        for column_index, header in enumerate(sales_headers):
+            value = expected.get(header, "")
+            if value is not None:  # Old values.batchUpdate skipped the null cell.
+                legacy_sales_matrix[row_index][column_index] = value
+    legacy_sales_rows = extract_rows_from_matrix(sales_headers, legacy_sales_matrix)
+    assert comparator_rows(legacy_sales_rows) != comparator_rows(
+        expected_rows["SalesRaw_Today"]
+    )
+    assert legacy_sales_rows[0]["WEIGHT"] == "stale-value"
+
+    client.update_tab_rows(
+        "SalesRaw_Today",
+        sales_headers,
+        [
+            {"sheet_row": index + 2, "row": row}
+            for index, row in enumerate(expected_rows["SalesRaw_Today"])
+        ],
+    )
+    for tab_name in ("README", "Orders_Today", "Needs_Size", "Shipping_Queue", "Exceptions"):
+        sync_mod._publish_rewrite_tab(
+            client,
+            tab_name,
+            contract.tabs[tab_name].headers,
+            expected_rows[tab_name],
+        )
+
+    assert len(session.calls) == 6
+    assert "/values:batchUpdate" in session.calls[0][1]
+    assert all(call[1].endswith(":batchUpdate") for call in session.calls[1:])
+    expected_union_rows = {
+        "README": 10,
+        "Orders_Today": 29,
+        "Needs_Size": 22,
+        "Shipping_Queue": 29,
+        "Exceptions": 22,
+    }
+    observed_union_rows = {}
+    for _method, _url, kwargs in session.calls[1:]:
+        update = kwargs["json"]["requests"][0]["updateCells"]
+        grid_range = update["range"]
+        observed_union_rows[session.id_to_name[grid_range["sheetId"]]] = grid_range[
+            "endRowIndex"
+        ]
+    assert observed_union_rows == expected_union_rows
+
+    for tab_name in contract.tabs:
+        live_rows = extract_rows_from_matrix(
+            contract.tabs[tab_name].headers,
+            session.values_get(tab_name),
+        )
+        if tab_name == "SalesRaw_Today":
+            assert comparator_rows(live_rows) == comparator_rows(expected_rows[tab_name])
+        else:
+            assert live_rows == expected_rows[tab_name]
+
+
+def test_google_ops_board_readback_treats_omitted_trailing_empty_cells_as_blank() -> None:
+    headers = ["key", "value", "trailing"]
+    expected = [
+        {"key": "one", "value": "set", "trailing": ""},
+        {"key": "two", "value": "", "trailing": ""},
+    ]
+    values_get_payload = [headers, ["one", "set"], ["two"]]
+
+    assert extract_rows_from_matrix(headers, values_get_payload) == expected
 
 
 def test_board_publish_flag_off_keeps_clear_then_write(monkeypatch):

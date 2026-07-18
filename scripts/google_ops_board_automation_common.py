@@ -606,6 +606,28 @@ def resolve_prewindow_health_report_path(
     return Path(root) / target_date.isoformat() / filename
 
 
+def resolve_prewindow_health_run_report_path(
+    target_date: date,
+    run_id: str,
+    root: Path = DEFAULT_PREWINDOW_HEALTH_ROOT,
+    profile: str = "full",
+) -> Path:
+    profile_name = str(profile or "full").strip().lower()
+    filename_map = {
+        "full": "prewindow_health",
+        "publish": "publish_health",
+        "closeout": "closeout_health",
+    }
+    stem = filename_map.get(profile_name, f"{profile_name}_health")
+    safe_run_id = _entry_slug(run_id)
+    return (
+        Path(root)
+        / target_date.isoformat()
+        / f"{stem}_runs"
+        / f"{stem}_{safe_run_id}.json"
+    )
+
+
 def resolve_closeout_checkpoint_path(
     target_date: date,
     root: Path = DEFAULT_CLOSEOUT_CHECKPOINT_ROOT,
