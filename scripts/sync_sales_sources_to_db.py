@@ -19,6 +19,7 @@ import subprocess
 import pandas as pd
 
 from core.analytics.sales_sources import load_crm_sales, load_fact_sales, merge_sales_sources, SALES_COLUMNS
+from core.db.sales_public_line_write_guard import assert_legacy_writer_allowed
 from core.paths import data_path
 
 DEFAULT_CRM = data_path("excel_ui", "SALES_KSP_CRM_V3.xlsx")
@@ -70,6 +71,11 @@ def main() -> None:
 
     conn = sqlite3.connect(str(args.db))
     try:
+        assert_legacy_writer_allowed(
+            conn,
+            writer="sync_sales_sources_to_db.py whole-table replacement",
+            tables=("sales_fact_v2",),
+        )
         required = ["order_id", "order_date", "sku_key", "sku_id", "my_size", "kaspi_offer_name"]
         before = len(combined)
         combined = combined.dropna(subset=required)

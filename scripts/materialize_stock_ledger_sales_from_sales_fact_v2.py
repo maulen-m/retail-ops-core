@@ -22,6 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.db.sales_public_line_write_guard import assert_legacy_writer_allowed
+
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "stock_ledger_sales_replay"
 INVENTORY_POOL_STORE_CODE = "UNIVERSAL"
@@ -458,6 +460,11 @@ def run_materialization(
                 raise RuntimeError(
                     "ENABLE_STOCK_LEDGER_SALES_REPLAY_WRITE=1 is required for --apply"
                 )
+            assert_legacy_writer_allowed(
+                conn,
+                writer="materialize_stock_ledger_sales_from_sales_fact_v2.py mutable-key replay",
+                tables=("sales_fact_v2", "stock_ledger"),
+            )
             rows_applied = _apply_events(conn, to_insert)
             conn.commit()
             summary["apply_status"] = "APPLIED"

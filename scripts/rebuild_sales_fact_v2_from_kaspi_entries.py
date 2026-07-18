@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.parsers.kaspi_parser import extract_sku_from_article
+from core.db.sales_public_line_write_guard import assert_legacy_writer_allowed
 
 DEFAULT_DB = PROJECT_ROOT / "db" / "app.db"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "exports" / "validation" / "sales_fact_v2_rebuild"
@@ -965,6 +966,11 @@ def run_rebuild(
                 raise RebuildError(
                     f"pre-SHA mismatch: observed={pre_sha256} expected={expected_pre_sha256}"
                 )
+            assert_legacy_writer_allowed(
+                conn,
+                writer="rebuild_sales_fact_v2_from_kaspi_entries.py mutable-key upsert",
+                tables=("sales_fact_v2",),
+            )
             backup = _backup_db(db_path, backup_root)
             rows_deleted = _delete_by_keys(conn, plan["rows_delete_keys"])
             rows_applied = _upsert(conn, plan["rows_insert"] + plan["rows_update"])

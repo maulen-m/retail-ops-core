@@ -34,6 +34,9 @@ from scripts.build_daily_aggregates import (  # noqa: E402
 )
 import scripts.validate_data_completeness as data_completeness  # noqa: E402
 from core.calc.economics import calc_cogs  # noqa: E402
+from core.db.sales_public_line_write_guard import (  # noqa: E402
+    assert_legacy_writer_allowed,
+)
 
 
 ENV_GATE = "ENABLE_FACT_SALES_DERIVED_REPLAY_WRITE"
@@ -594,6 +597,15 @@ def run_replay(
             raise FactSalesReplayError(f"{ENV_GATE}=1 is required with --apply")
         if backup_dir is None:
             raise FactSalesReplayError("--backup-dir is required with --apply")
+        guard_conn = sqlite3.connect(str(db_path))
+        try:
+            assert_legacy_writer_allowed(
+                guard_conn,
+                writer="apply_fact_sales_derived_replay.py CRM/mutable-key replay",
+                tables=("sales_fact_v2", "fact_sales"),
+            )
+        finally:
+            guard_conn.close()
         backup_path = _sqlite_backup(
             db_path,
             backup_dir / f"app_before_fact_sales_derived_replay_{source_pre_sha[:12]}.db",

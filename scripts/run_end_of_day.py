@@ -630,11 +630,10 @@ def _run_pipeline(args, start_time: datetime) -> int:
             skip_on_dry_run=True,
         ),
         PipelineStep(
-            name="2d. Clamp Negative Ledger (auto)",
+            name="2d. Audit Negative Ledger (no writes)",
             script="clamp_negative_ledger.py",
-            args=["--snapshot-date", cutoff_date.isoformat(), "--apply", "--force"],
+            args=["--snapshot-date", cutoff_date.isoformat()],
             required=True,
-            skip_on_dry_run=True,
         ),
         PipelineStep(
             name="2e. Rebuild Inventory Snapshot (auto)",
