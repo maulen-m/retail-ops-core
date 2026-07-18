@@ -219,7 +219,7 @@ echo ""
 # Step 1: Download pending orders for TODAY (no archive for speed)
 echo "Step 1: Downloading TODAY's pending orders from Kaspi API..."
 echo "----------------------------------------"
-python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --refetch-missing-costs --verbose --no-archive
+python scripts/export_api_orders.py --all-stores --require-complete --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --refetch-missing-costs --verbose --no-archive
 
 if [ $? -ne 0 ]; then
     echo ""
@@ -713,7 +713,7 @@ PY
             break
         fi
 
-        python scripts/export_api_orders.py --all-stores --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --refetch-missing-costs --verbose --no-archive
+        python scripts/export_api_orders.py --all-stores --require-complete --state KASPI_DELIVERY --days "${LOOKBACK_DAYS}" ${DATE_FLAG} --refetch-missing-costs --verbose --no-archive
         if [ $? -ne 0 ]; then
             echo "WARNING: late-arrival top-up export failed."
             WARNINGS+=("Late-arrival top-up export failed. Fix: rerun full import.")

@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 from typing import Callable
 
 Runner = Callable[[str], tuple[int, str]]
@@ -36,27 +37,28 @@ def run_preflight_shipment(
 ) -> dict:
     root = Path(project_root).resolve()
     run = runner or (lambda cmd: _default_runner(cmd, project_root=root))
+    python = shlex.quote(sys.executable)
 
     checks = [
         (
             "anchor_health",
-            f"python3 scripts/check_anchor_health.py --project-root {shlex.quote(str(root))}",
+            f"{python} scripts/check_anchor_health.py --project-root {shlex.quote(str(root))}",
         ),
         (
             "scheduler_validate_only",
             "bash scripts/install_single_truth_ops_scheduler.sh --validate-only",
         ),
         (
-            "validate_params_strict",
-            "python3 scripts/validate_params.py --strict",
+            "local_db_preflight",
+            f"{python} scripts/check_local_app_db.py --db-path {shlex.quote(str(root / 'db' / 'app.db'))}",
         ),
         (
             "validate_single_truth_system",
-            "python3 scripts/validate_single_truth_system.py",
+            f"{python} scripts/validate_single_truth_system.py",
         ),
         (
             "ops_status",
-            f"python3 scripts/ops_status.py --project-root {shlex.quote(str(root))}",
+            f"{python} scripts/ops_status.py --project-root {shlex.quote(str(root))}",
         ),
     ]
 

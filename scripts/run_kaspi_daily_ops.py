@@ -315,10 +315,11 @@ def run_kaspi_daily_ops(
             )
         return ok
 
+    python = shlex.quote(sys.executable)
     static_checks = [
         (
             "validate_schema",
-            "python3 scripts/validate_schema.py",
+            f"{python} scripts/validate_schema.py",
         ),
         (
             "scheduler_validate_only",
@@ -327,7 +328,7 @@ def run_kaspi_daily_ops(
         (
             "anchor_health",
             (
-                "python3 scripts/check_anchor_health.py "
+                f"{python} scripts/check_anchor_health.py "
                 f"--project-root {shlex.quote(str(root))} "
                 f"--as-of {shlex.quote(as_of)} "
                 f"--max-future-content-days {max_future_content_days}"
@@ -335,11 +336,11 @@ def run_kaspi_daily_ops(
         ),
         (
             "ops_status",
-            f"python3 scripts/ops_status.py --project-root {shlex.quote(str(root))}",
+            f"{python} scripts/ops_status.py --project-root {shlex.quote(str(root))}",
         ),
         (
             "shipment_preflight",
-            f"python3 scripts/preflight_shipment.py --project-root {shlex.quote(str(root))}",
+            f"{python} scripts/preflight_shipment.py --project-root {shlex.quote(str(root))}",
         ),
     ]
 
@@ -350,7 +351,7 @@ def run_kaspi_daily_ops(
     for store in stores:
         include_overdue_flag = " --include-overdue" if profile_cfg["include_overdue"] else ""
         cmd = (
-            "python3 scripts/report_waybill_status.py "
+            f"{python} scripts/report_waybill_status.py "
             f"--date {shlex.quote(as_of)} --since-days {profile_cfg['since_days']} "
             f"--store {shlex.quote(store)}{include_overdue_flag} --strict-stopline"
         )
@@ -376,11 +377,11 @@ def run_kaspi_daily_ops(
     drift_commands = [
         (
             "build_ops_drift_pack",
-            f"python3 scripts/build_ops_drift_pack.py --as-of {shlex.quote(as_of)}",
+            f"{python} scripts/build_ops_drift_pack.py --as-of {shlex.quote(as_of)}",
         ),
         (
             "validate_drift_pack_slo",
-            f"python3 scripts/validate_drift_pack_slo.py --strict --as-of {shlex.quote(as_of)}",
+            f"{python} scripts/validate_drift_pack_slo.py --strict --as-of {shlex.quote(as_of)}",
         ),
     ]
     for step, cmd in drift_commands:

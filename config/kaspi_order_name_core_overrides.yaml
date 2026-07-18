@@ -8,3 +8,7 @@ overrides:
     active: true
     kaspi_name_core: "Женский_3в1_ГОЛУБОЙ"
     reason: "2026-07-04 Telegram recovery: exact OF_LINE31_ST_MB_S / blue 44 offer is missing from dim_kaspi_article_map, so keep the bundle name on the existing safe LINE31 blue core instead of raw offer extraction."
+  "998183534":
+    active: true
+    kaspi_name_core: "Женский_3в1_БЕЖЕВЫЙ"
+    reason: "2026-07-15 Telegram preflight recovery: exact OF_LINE31_ST_IV_L / beige 48 offer is missing from dim_kaspi_article_map; adjacent active LINE31 ivory mappings prove the canonical beige packing core."
