@@ -32,7 +32,7 @@ Cashflow Decision Gate
   - no partial-range rebuild that resets opening balances
 - Owning docs/config:
   - `docs/KASPI_ORDER_CASHFLOW_TRACKING.md`
-  - `docs/KASPI_API_DAILY_PIPELINE_EXEC_SUMMARY_2026-01-22.md`
+  - `docs/archive/KASPI_API_DAILY_PIPELINE_EXEC_SUMMARY_2026-01-22.md`
   - `config/payout_model.yaml`
   - `config/bank_accounts.yaml`
   - `docs/PLAN_G40_G44_CASHFLOW_TRUSTED_DASHBOARD_V3_API_FORWARD.md` if present
@@ -44,6 +44,10 @@ Oracle + Skills
 - Offline oracle pack: `scripts/oracle_pack.sh`
 - Online oracle run: `scripts/oracle_run.sh --confirm`
 - Git workflow rules live in `.claude/GIT_HYGIENE.md`
+
+Git Governance
+- Canonical contract: docs/GIT_GOVERNANCE_CONTRACT.md.
+- Shared hooks enforce the contract; do not bypass them.
 
 Parallel Rollout Default
 - Default multi-agent mode in this repo is `one write-capable execution agent + read-only analyst agents`.

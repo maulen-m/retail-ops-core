@@ -34,7 +34,7 @@ Task Routes
   - `docs/DAILY_SOP.md`
 - Cashflow:
   - `docs/KASPI_ORDER_CASHFLOW_TRACKING.md`
-  - `docs/KASPI_API_DAILY_PIPELINE_EXEC_SUMMARY_2026-01-22.md`
+  - `docs/archive/KASPI_API_DAILY_PIPELINE_EXEC_SUMMARY_2026-01-22.md`
   - `config/payout_model.yaml`
   - `config/bank_accounts.yaml`
 - Daily ops / waybills / WhatsApp:
