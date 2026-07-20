@@ -293,7 +293,8 @@
         "KASPI_PLANNED_CUTOFF_HOUR": "17",
         "KASPI_PLANNED_CUTOFF_MINUTE": "0",
         "KASPI_PLANNED_CUTOFF_HOUR_ACMEWEAR": "17",
-        "KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR": "0"
+        "KASPI_PLANNED_CUTOFF_MINUTE_ACMEWEAR": "0",
+        "AB_ATOMIC_BOARD_PUBLISH": "1"
       },
       "stdout": "${PROJECT_ROOT}/runtime_logs/google_ops_board_publish_stdout.log",
       "stderr": "${PROJECT_ROOT}/runtime_logs/google_ops_board_publish_stderr.log"

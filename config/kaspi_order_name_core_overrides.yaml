@@ -12,3 +12,11 @@ overrides:
     active: true
     kaspi_name_core: "Женский_3в1_БЕЖЕВЫЙ"
     reason: "2026-07-15 Telegram preflight recovery: exact OF_LINE31_ST_IV_L / beige 48 offer is missing from dim_kaspi_article_map; adjacent active LINE31 ivory mappings prove the canonical beige packing core."
+  "1005236464":
+    active: true
+    kaspi_name_core: "Эпсон_L3269_МФУ"
+    reason: "2026-07-20 owner one-off printer sale (Epson L3269, delisted after order): offer ELS_PRINTER_EPSON_L3269_BLACK_107433651 is intentionally absent from dim_kaspi_article_map; safe packing core for prewindow attribution and bundle naming."
+  "1004637112":
+    active: true
+    kaspi_name_core: "Принт_5в1_черный"
+    reason: "2026-07-20 prewindow recovery: today's ingest left kaspi_article empty for this STOREB order and sku CL_OC_MEN_LINE52_BLACK carries a conflicting core map; Принт_5в1_черный is the established packing core for this sku (shipped 2026-07-18 bundles)."
