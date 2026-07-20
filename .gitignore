@@ -160,3 +160,4 @@ runtime/locks/
 .claude/settings.local.json
 runs/git_hygiene_*/
 runs/ops_stoplines/
+runtime/state/
