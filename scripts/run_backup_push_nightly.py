@@ -16,7 +16,40 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.alerts.ops_alert_outbox import enqueue_alert  # noqa: E402
 
 
+STATE_ALLOWLIST = {
+    ".claude/DECISIONS.md",
+    ".claude/GOALS.md",
+    ".claude/ISSUES.md",
+    ".claude/PROGRESS.md",
+    ".claude/SESSION_LOG.md",
+    ".claude/TASKS.md",
+}
+
+
+def snapshot_state_logs() -> None:
+    """Commit allowlisted .claude state logs so the nightly push can run.
+
+    Any dirty path outside the allowlist is left untouched and the helper's
+    own dirty-tree refusal remains the enforcement surface.
+    """
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+    )
+    dirty = [line[3:].strip() for line in result.stdout.splitlines() if line.strip()]
+    if not dirty or any(path not in STATE_ALLOWLIST for path in dirty):
+        return
+    subprocess.run(["git", "add", "--", *dirty], cwd=PROJECT_ROOT, check=False)
+    subprocess.run(
+        ["git", "commit", "--only", "-m",
+         "state: nightly operational log snapshot\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+         "--", *dirty],
+        cwd=PROJECT_ROOT, check=False,
+    )
+
+
 def run_backup_push(note: str) -> int:
+    snapshot_state_logs()
     helper = PROJECT_ROOT / "scripts" / "backup_push.sh"
     if not helper.is_file():
         returncode = 127
