@@ -19,6 +19,18 @@ class _FakeClient:
         return self._tab_values.get(tab_name, [])
 
 
+def _split_v1_client(contract, run_control_row: list[str]) -> _FakeClient:
+    return _FakeClient(
+        {
+            "SalesRaw_Today": [contract.tabs["SalesRaw_Today"].headers],
+            "Run_Control": [
+                contract.tabs["Run_Control"].headers,
+                run_control_row,
+            ],
+        }
+    )
+
+
 def _write_manifest(today_root: Path) -> Path:
     batch_root = today_root / "MERGED" / "SEND" / "21.04.26_MERGED_qnt2"
     batch_root.mkdir(parents=True, exist_ok=True)
@@ -29,6 +41,7 @@ def _write_manifest(today_root: Path) -> Path:
         "ready_set_at": "2026-04-21T17:00:00+05:00",
         "request_identity": {
             "target_date": "2026-04-21",
+            "ready_source": "EMPLOYEE",
             "ready_set_at": "2026-04-21T17:00:00+05:00",
         },
         "source_root": str(batch_root),
@@ -102,6 +115,7 @@ def _write_apply_checkpoint(
                     "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
                     "request_identity": {
                         "target_date": "2026-04-21",
+                        "ready_source": "EMPLOYEE",
                         "ready_set_at": ready_set_at,
                     },
                 },
@@ -115,13 +129,9 @@ def _write_apply_checkpoint(
 
 def test_closeout_completion_requires_confirmed_delivery_ledger(tmp_path: Path) -> None:
     contract = load_ops_board_contract()
-    client = _FakeClient(
-        {
-            "Run_Control": [
-                contract.tabs["Run_Control"].headers,
-                ["2026-04-21", "READY", "adil", "2026-04-21T17:00:00+05:00", "", "", "run-1", "OK"],
-            ]
-        }
+    client = _split_v1_client(
+        contract,
+        ["2026-04-21", "READY", "adil", "2026-04-21T17:00:00+05:00", "", "", "run-1", "OK"],
     )
     batch_root = _write_manifest(tmp_path)
     run_root = tmp_path / "workflow_runs"
@@ -189,22 +199,18 @@ def test_delivery_completion_rejects_unbound_telegram_ledger(tmp_path: Path) -> 
     )
 
     state = common_mod.closeout_completion_state(
-        client=_FakeClient(
-            {
-                "Run_Control": [
-                    load_ops_board_contract().tabs["Run_Control"].headers,
-                    [
-                        "2026-04-21",
-                        "READY",
-                        "adil",
-                        "2026-04-21T17:00:00+05:00",
-                        "",
-                        "",
-                        "run-1",
-                        "OK",
-                    ],
-                ]
-            }
+        client=_split_v1_client(
+            load_ops_board_contract(),
+            [
+                "2026-04-21",
+                "READY",
+                "adil",
+                "2026-04-21T17:00:00+05:00",
+                "",
+                "",
+                "run-1",
+                "OK",
+            ],
         ),
         contract=load_ops_board_contract(),
         target_date=date(2026, 4, 21),
@@ -222,22 +228,18 @@ def test_zero_order_apply_marker_is_a_terminal_closeout_completion(
     contract = load_ops_board_contract()
     run_id = "run-zero"
     ready_set_at = "2026-04-21T17:00:00+05:00"
-    client = _FakeClient(
-        {
-            "Run_Control": [
-                contract.tabs["Run_Control"].headers,
-                [
-                    "2026-04-21",
-                    "READY",
-                    "adil",
-                    ready_set_at,
-                    "",
-                    "",
-                    run_id,
-                    "OK",
-                ],
-            ]
-        }
+    client = _split_v1_client(
+        contract,
+        [
+            "2026-04-21",
+            "READY",
+            "adil",
+            ready_set_at,
+            "",
+            "",
+            run_id,
+            "OK",
+        ],
     )
     marker_path = (
         tmp_path
@@ -253,6 +255,7 @@ def test_zero_order_apply_marker_is_a_terminal_closeout_completion(
         "target_date": "2026-04-21",
         "request_identity": {
             "target_date": "2026-04-21",
+            "ready_source": "EMPLOYEE",
             "ready_set_at": ready_set_at,
         },
         "expected_order_ids": [],
@@ -288,6 +291,7 @@ def test_zero_order_apply_marker_is_a_terminal_closeout_completion(
                 "target_date": "2026-04-21",
                 "request_identity": {
                     "target_date": "2026-04-21",
+                    "ready_source": "EMPLOYEE",
                     "ready_set_at": ready_set_at,
                 },
                 "required_order_count": 0,
@@ -313,13 +317,9 @@ def test_zero_order_apply_marker_is_a_terminal_closeout_completion(
 
 def test_whatsapp_completion_requires_explicit_delivery_report(tmp_path: Path) -> None:
     contract = load_ops_board_contract()
-    client = _FakeClient(
-        {
-            "Run_Control": [
-                contract.tabs["Run_Control"].headers,
-                ["2026-04-21", "READY", "adil", "2026-04-21T17:00:00+05:00", "", "", "run-1", "OK"],
-            ]
-        }
+    client = _split_v1_client(
+        contract,
+        ["2026-04-21", "READY", "adil", "2026-04-21T17:00:00+05:00", "", "", "run-1", "OK"],
     )
     batch_root = _write_manifest(tmp_path)
     run_root = tmp_path / "workflow_runs"
@@ -374,13 +374,9 @@ def test_closeout_completion_rejects_confirmed_ledger_for_different_ready_reques
     tmp_path: Path,
 ) -> None:
     contract = load_ops_board_contract()
-    client = _FakeClient(
-        {
-            "Run_Control": [
-                contract.tabs["Run_Control"].headers,
-                ["2026-04-21", "READY", "adil", "2026-04-21T17:01:00+05:00", "", "", "run-2", "OK"],
-            ]
-        }
+    client = _split_v1_client(
+        contract,
+        ["2026-04-21", "READY", "adil", "2026-04-21T17:01:00+05:00", "", "", "run-2", "OK"],
     )
     batch_root = _write_manifest(tmp_path)
     _write_telegram_ledger(batch_root, {"pdf-a": "confirmed", "pdf-b": "confirmed"})
