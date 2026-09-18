@@ -1,163 +1,20 @@
-# Environment and secrets
 .env
-.env.local
-.env.*.local
-
-# Python
+.env.*
+!.env.example
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-ENV/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# Local agent tooling
-.claude/skills/
-.claude\ alias
-
-# OS
-.DS_Store
-._*
-.AppleDouble
-.LSOverride
-Thumbs.db
-
-# Database (keep schema, exclude data)
 *.db
-db/*.db
-db/app.db
-db/app.db.backup*
-db/app_*.db
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.sqlite-journal
-
-# Logs
-*.log
-*.pid
-logs/
-logs
-logs.pre_migration_*/
-
-# Local Telegram control runtime state
-runtime/state/waybill_telegram_allowed_users.txt
-runtime/state/waybill_telegram_control_bot.json
-runtime/state/*.jsonl
-runtime/api_ledger/kaspi_api_*.jsonl
-runtime/playwright/*session*.json
-runtime/playwright/*profile*/
-runtime/customer_size_request_ledger/*.sqlite
-runtime/automation_control/
-
-# Exports (regeneratable)
-exports/
-reports/
-Oracle_listings/generated/
-
-# Excel exports (generated)
-*_raw.xlsx
-*_econ.xlsx
-excel_ui/ActiveOrders/on_delivery/
-excel_ui/ActiveOrders/on_delivery/**/*.xlsx
-excel_ui/ActiveOrders/*.xlsx
-imports/webui_archive_manual/
-green_path_run/line31_prechange_export_*.json
-docs/plan/green_path_2026-06/green_path_run/line31_prechange_export_*.json
-**/TRANSIENT_*DO_NOT_ARCHIVE*
-
-# Backups
-backups/
-backups
-archives/
-backups.pre_migration_*/
-db/backups/
-db/backups
-db/backups.pre_migration_*/
-
-# Excel temp files
-~$*.xls
-~$*.xlsx
-~$*.xlsm
-~$*.xlsb
-
-# Local UI workbooks (keep untracked)
-excel_ui/SALES_KSP_CRM_V3.xlsx
-excel/Inventory_Core_V18.1_V2.xlsx
-config/anchors/SALES_KSP_CRM_LATEST.xlsx
-config/anchors/INBOUND_CALENDAR_LATEST.xlsx
-
-# Generated business-insides snapshots (daily)
-config/business_insides/BUSINESS_INSIDES_*.md
-config/business_insides/snapshots/BUSINESS_INSIDES_*.md
-config/business_insides/BUSINESS_INSIDES_*.json
-config/business_insides/snapshots/BUSINESS_INSIDES_*.json
-
-# Kaspi offer creation references (track only the canonical reference)
-docs/offer_creation/*.xlsm
-!docs/offer_creation/ACMEWEAR_LINE61_V10_REFERENCE.xlsm
-!docs/offer_creation/ACMEWEAR_LINE61_THERMAL_V1_REFERENCE.xlsm
-!docs/offer_creation/templates/Men-thermal-underwear-import-template.xlsm
-
-# Waybill inputs + archives (keep untracked)
-excel_ui/ActiveOrders/waybills/
-excel_ui/ActiveOrders/waybill*.zip
-excel_ui/Archive/
-
-# Temporary files
-tmp/
-temp/
-
-# Local orchestration runtime surfaces (traceable summaries live in docs/)
-runs/agent6_c3_source_refresh/
-runs/tmux_orchestration/
-runs/tmux_orchestration_quarantine/
-
-# Local green-path/customer-chat evidence surfaces (may contain DB copies, live IDs, or session-derived context)
-.claude/TEMP_*.md
-.claude/orchestrator_runs/
-.claude/ops_incident_telemetry.csv
-docs/agent_handoffs/KASPI_CUSTOMER*
-docs/plans/
-expected_closeout_orders.json
-green_path_run/
-
-# Test artifacts
+*.sqlite*
+*.csv
+*.xlsx
+*.xlsm
+*.pdf
+/data/
+/exports/
+/reports/
+/runs/
+/runtime/
+/runtime_logs/
+/db/
+.DS_Store
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-runtime/state/*.json
-runtime/state/*.bak
-runtime/locks/
-.claude/settings.local.json
-runs/git_hygiene_*/
-runs/ops_stoplines/
-runtime/state/
